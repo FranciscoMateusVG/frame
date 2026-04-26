@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: frame-postgres
+    environment:
+      POSTGRES_USER: frame
+      POSTGRES_PASSWORD: frame
+      POSTGRES_DB: frame
+    ports:
+      - "54320:5432"
+    volumes:
+      - frame-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U frame -d frame"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  frame-data:

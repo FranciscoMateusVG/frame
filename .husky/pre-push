@@ -1,0 +1,4 @@
+echo "🔬 Pre-push gate: running pnpm check..."
+echo "This is the canonical quality gate. Do NOT bypass with --no-verify."
+echo ""
+pnpm check
