@@ -73,6 +73,18 @@
   "engines": {
     "node": ">=20"
   },
+  "peerDependencies": {
+    "@opentelemetry/sdk-trace-base": ">=2.0.0",
+    "@opentelemetry/sdk-trace-node": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/sdk-trace-base": {
+      "optional": true
+    },
+    "@opentelemetry/sdk-trace-node": {
+      "optional": true
+    }
+  },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.215.0",

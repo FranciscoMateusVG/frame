@@ -61,7 +61,7 @@
 | `src/adapters/cat-repository.postgres.ts` | Module-level `trace.getTracer('frame')`, every method wrapped in span with semantic attributes |
 | `src/adapters/cat-repository.memory.ts` | Same instrumentation as Postgres adapter (`db.system: 'memory'`) |
 | `src/index.ts` | Exports: Logger, ConsoleLogger, NoopLogger, OtelLogger, Observability, Tracer, Span, SpanStatusCode, SpanKind, noopTracer, trace |
-| `package.json` | Added OTel deps (API runtime, SDK devDeps exact-pinned), `frame/testing` subpath, updated `check` script |
+| `package.json` | Added OTel deps (API runtime, SDK devDeps exact-pinned, SDK optional peerDeps), `frame/testing` subpath, updated `check` script |
 | `tsup.config.ts` | Added `testing` entry point |
 | `vitest.config.ts` | Excluded `src/testing/**` from coverage (it's an exported helper, not production code) |
 | `.dependency-cruiser.cjs` | Added `no-otel-sdk-in-production` rule |
@@ -72,6 +72,13 @@
 | `tests/integration/cat-repository.postgres.test.ts` | Added observability helper, span options to conformance call |
 | `tests/unit/cat-repository.memory.test.ts` | Added observability helper, span options to conformance call |
 | `tests/unit/cat-property.test.ts` | Added observability + clock deps to createCat calls |
+| `tests/helpers/test-db.ts` | Replaced manual Kysely construction with `createDatabase()` (fixes database.ts 0% coverage) |
+
+### New Files (Wave 2 close cleanup)
+
+| File | Purpose |
+|------|---------|
+| `tests/unit/logger.test.ts` | Unit tests for ConsoleLogger (console spy assertions) and NoopLogger (doesn't throw) |
 
 ### Deleted Files
 
@@ -97,7 +104,7 @@ $ pnpm depcruise
 $ pnpm check
 
 > biome check .
-Checked 39 files in 27ms. No fixes applied.
+Checked 40 files in 10ms. No fixes applied.
 
 > depcruise src
 ✔ no dependency violations found (26 modules, 54 dependencies cruised)
@@ -109,8 +116,8 @@ Checked 39 files in 27ms. No fixes applied.
 ✅ No codegen drift. Committed types match live schema.
 
 > vitest run --coverage
- Test Files  6 passed (6)
-      Tests  58 passed (58)
+ Test Files  7 passed (7)
+      Tests  64 passed (64)
 
 > tsx examples/create-cat.ts
 🎉 Example completed successfully!
@@ -130,14 +137,11 @@ Checked 39 files in 27ms. No fixes applied.
 -------------------|---------|----------|---------|---------|-------------------
 File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
 -------------------|---------|----------|---------|---------|-------------------
-All files          |   72.29 |       52 |   63.41 |    72.1 |
- adapters          |   78.94 |    78.57 |      95 |   78.94 |
+All files          |    83.1 |       84 |   85.36 |   82.99 |
+ adapters          |      80 |    78.57 |     100 |      80 |
   ...ory.memory.ts |   81.25 |       50 |     100 |   81.25 | 56-58,78-80,95-97
   ...y.postgres.ts |   78.26 |       90 |     100 |   78.26 | ...,89-91,106-108
-  database.ts      |       0 |      100 |       0 |       0 | 8
- observability     |    4.54 |        0 |    12.5 |    4.54 |
-  ...ole-logger.ts |       0 |        0 |       0 |       0 | 13-44
-  noop-logger.ts   |       0 |        0 |       0 |       0 |
+ observability     |   72.72 |    88.88 |    62.5 |   72.72 |
   otel-logger.ts   |       0 |        0 |       0 |       0 | 33-61
 -------------------|---------|----------|---------|---------|-------------------
 ```
@@ -146,12 +150,14 @@ All files          |   72.29 |       52 |   63.41 |    72.1 |
 - `src/domain/cat.ts`: 90/90/85 ✅
 - `src/use-cases/create-cat.ts`: 90/90/85 ✅
 
-**Observability files coverage note:** `ConsoleLogger`, `NoopLogger`, and `OtelLogger` show low coverage because:
-- `NoopLogger` has no executable statements (empty methods) — coverage tools report 0% for files with no coverable lines
-- `ConsoleLogger` is exercised by examples (not test coverage instrumentation)
-- `OtelLogger` requires an OTel LoggerProvider SDK to be registered — testing it properly would mean adding the OTel Logs SDK to the test helper, which is a Wave 3 candidate
+**Coverage improvements from Wave 2 close cleanup:**
+- `database.ts` — was 0%, now covered. `tests/helpers/test-db.ts` was constructing Kysely manually instead of using `createDatabase()`. This was a Wave 1 close miss — fixed by updating the test helper to use the same factory consumers use. All integration tests now exercise `createDatabase()`.
+- `console-logger.ts` — was 0%, now 100%. Unit tests with console spies verify format and routing (`info` → `console.log`, `error` → `console.error`, etc.).
+- `noop-logger.ts` — was 0%, now covered. Unit test confirms all methods execute without throwing.
 
-The uncovered adapter lines (56-58, 78-80, 95-97 in memory; similar in Postgres) are the error-path `catch` blocks in `findById`, `findByName`, and `deleteById` — these methods don't throw in normal operation. The `save` error path IS covered via the duplicate-name conformance test.
+**Remaining uncovered:**
+- `otel-logger.ts` at 0% — requires `@opentelemetry/sdk-logs` LoggerProvider in test helper. Deferred to Wave 3+ (see Open Questions).
+- Adapter error-path `catch` blocks in `findById`, `findByName`, `deleteById` — these methods don't throw in normal operation. The `save` error path IS covered via the duplicate-name conformance test.
 
 ## 7. Drift Check Verification
 
@@ -227,13 +233,9 @@ Additional standalone spans from the example:
 
 ## 10. Open Questions / Known Issues
 
-1. **Observability file coverage is low.** `ConsoleLogger`, `NoopLogger`, and `OtelLogger` aren't covered by the Vitest instrumentation. The NoopLogger is used in tests but has no executable lines. The ConsoleLogger is exercised by examples. The OtelLogger requires a Logs SDK setup. Consider adding lightweight unit tests in Wave 3 if coverage becomes a gate.
+1. **`OtelLogger` at 0% coverage (Wave 3+ candidate).** `OtelLogger` trace correlation is untested. It forwards log records to the OTel Logs API and claims automatic trace context correlation via AsyncLocalStorage. Testing it properly requires setting up `@opentelemetry/sdk-logs` (LoggerProvider + InMemoryLogRecordExporter) in the test helper. The mechanism is OTel's, not ours — low risk, but the gap should close eventually. `@opentelemetry/sdk-logs` is already a devDep (installed in Wave 2 for future use).
 
-2. **`OtelLogger` trace correlation is untested.** The `OtelLogger` claims to automatically correlate logs with traces via AsyncLocalStorage context. This is how the OTel SDK works by design, but we have no test proving it. A proper test would require setting up the OTel Logs SDK (`@opentelemetry/sdk-logs`) in the test helper. Low priority since the mechanism is OTel's, not ours.
-
-3. **`database.ts` at 0% coverage.** Unchanged from Wave 1. It's a consumer-facing utility (`createDatabase`) that's used by consumers, not by Frame's own tests (which use Testcontainers).
-
-4. **OTel SDK `@opentelemetry/sdk-trace-node` is listed as a devDependency but consumers need it too.** Consumers following the OTel example will need to install `@opentelemetry/sdk-trace-node` (and optionally `@opentelemetry/sdk-trace-base`). This is documented in the example but not explicitly in the README's install instructions. Consider adding a "Consumer OTel Setup" section to README in a future wave.
+2. **OTel SDK packages are now optional peerDependencies.** `@opentelemetry/sdk-trace-base` and `@opentelemetry/sdk-trace-node` are listed as optional peer deps (>=2.0.0) so consumers who import `frame/testing` or wire up their own OTel SDK get a clear install signal from their package manager. They remain in devDeps for Frame's own tests. This is the standard pattern for libraries that expose optional integrations.
 
 ## 11. Files That Need Human Review First
 

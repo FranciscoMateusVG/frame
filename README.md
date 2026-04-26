@@ -78,6 +78,12 @@ Frame ships structured logging and distributed tracing via OpenTelemetry as firs
 
 Frame deliberately does NOT provide a `setupObservability()` helper. Consumers own SDK configuration — sampling, exporter choice, and resource attributes are your decisions, not Frame's.
 
+Install the OTel SDK packages (listed as optional peer dependencies):
+
+```bash
+pnpm add @opentelemetry/sdk-trace-base @opentelemetry/sdk-trace-node
+```
+
 See [`examples/create-cat.with-otel.ts`](examples/create-cat.with-otel.ts) for the complete, copy-pasteable setup:
 
 ```typescript
