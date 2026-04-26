@@ -59,7 +59,7 @@ Code in `src/` that:
   - Adapters resolve their tracer via `trace.getTracer('frame')` at module level. They do not receive observability via constructor or argument.
   - Use cases receive `Observability` via `deps.observability`.
   - When adding a migration, run `pnpm db:codegen` and commit the regenerated types.
-  - When adding a new repository method, extend the conformance test suite to cover it.
+  - When adding a new repository method, extend the conformance test suite (`tests/helpers/cat-repository.conformance.ts`) to cover it.
 
 ## When You're Stuck
 

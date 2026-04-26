@@ -16,13 +16,15 @@ A test file (or files) that:
    - ✅ "after creating a cat, fetching by id returns the cat"
    - ❌ "calling createCat invokes repository.save once"
 2. Follows the **structure and style** of existing tests, especially:
-   - `tests/integration/cat-repository.postgres.test.ts`
-   - `tests/integration/cat-repository.conformance.ts`
+   - `tests/integration/create-cat.test.ts` (canonical use case behavior tests + span assertions)
+   - `tests/integration/cat-repository.postgres.test.ts` (repository integration tests)
+   - `tests/helpers/cat-repository.conformance.ts` (shared conformance scenarios run by both adapters)
    - `tests/unit/cat-property.test.ts` (for invariants)
+   - `tests/unit/logger.test.ts` (for observability primitives — ConsoleLogger, NoopLogger)
 3. Covers **all** error cases described, including edge cases at validation boundaries.
 4. Includes a **span emission assertion** for every use case test (use cases emit one span; adapter calls emit child spans). Use the `getSpans()` helper from `tests/helpers/observability.ts`.
 5. Includes **property-based tests** wherever invariants exist (round-trip equality, idempotency, monotonicity, etc.). Use `fast-check`.
-6. Uses the **conformance suite** for any new repository methods — extend `tests/integration/cat-repository.conformance.ts` so both adapters are tested through the same scenarios.
+6. Uses the **conformance suite** for any new repository methods — extend `tests/helpers/cat-repository.conformance.ts` so both adapters are tested through the same scenarios.
 7. Names tests as **specs**: the `it(...)` string should read like a behavior statement. "creates a cat with the given name" not "test 1".
 
 ## What You Must NOT Do

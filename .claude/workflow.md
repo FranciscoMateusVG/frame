@@ -90,8 +90,12 @@ About ten minutes. Then merge.
 - Architectural rules: `.claude/CLAUDE.md`
 - Existing patterns to model new work after:
   - Use case: `src/use-cases/create-cat.ts`
-  - Use case tests: `tests/integration/cat-repository.postgres.test.ts`
+  - Use case behavior tests: `tests/integration/create-cat.test.ts`
+  - Repository integration tests: `tests/integration/cat-repository.postgres.test.ts`
   - Repository interface: `src/adapters/cat-repository.ts`
   - Adapters: `src/adapters/cat-repository.{postgres,memory}.ts`
-  - Conformance suite: `tests/integration/cat-repository.conformance.ts`
+  - Conformance suite: `tests/helpers/cat-repository.conformance.ts`
   - Property tests: `tests/unit/cat-property.test.ts`
+  - Observability primitive tests: `tests/unit/logger.test.ts`
+  - Test observability helper: `tests/helpers/observability.ts`
+  - Test database helper: `tests/helpers/test-db.ts`
