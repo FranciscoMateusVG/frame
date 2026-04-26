@@ -3,7 +3,14 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { CatRepositoryMemory } from '../../src/adapters/cat-repository.memory.js';
 import { CatNameSchema } from '../../src/domain/cat.js';
+import { NoopLogger } from '../../src/observability/noop-logger.js';
+import { noopTracer } from '../../src/observability/tracer.js';
 import { createCat } from '../../src/use-cases/create-cat.js';
+
+const silentObservability = {
+  logger: new NoopLogger(),
+  tracer: noopTracer(),
+};
 
 describe('Cat property-based tests', () => {
   it('round-trip: creating a cat then fetching it returns the same cat for any valid input', async () => {
@@ -14,7 +21,10 @@ describe('Cat property-based tests', () => {
           const catRepository = new CatRepositoryMemory();
           const id = randomUUID();
 
-          const created = await createCat({ catRepository }, { id, name });
+          const created = await createCat(
+            { catRepository, clock: () => new Date(), observability: silentObservability },
+            { id, name },
+          );
           const fetched = await catRepository.findById(id);
 
           expect(fetched).toBeDefined();

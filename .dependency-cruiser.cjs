@@ -30,6 +30,16 @@ module.exports = {
       to: { path: '^src/index\\.ts$' },
     },
     {
+      name: 'no-otel-sdk-in-production',
+      comment:
+        'Production code (src/) must only use the OTel API, never the SDK. The SDK is for tests, examples, and consumer setup only. Exception: src/testing/ is an exported test helper that intentionally uses the SDK.',
+      severity: 'error',
+      from: { path: '^src/', pathNot: '^src/testing/' },
+      to: {
+        path: '@opentelemetry/sdk-',
+      },
+    },
+    {
       name: 'no-circular',
       comment: 'No circular dependencies anywhere.',
       severity: 'error',

@@ -4,10 +4,15 @@
  * Fully self-contained — uses Testcontainers to spin up a Postgres instance.
  * No external dependencies required beyond Docker.
  *
+ * Uses ConsoleLogger for pretty output and noopTracer (no OTel SDK needed).
+ * For the full OTel tracing example, see create-cat.with-otel.ts.
+ *
  * Usage: pnpm tsx examples/create-cat.ts
  */
 import { randomUUID } from 'node:crypto';
 import { CatRepositoryPostgres } from '../src/adapters/cat-repository.postgres.js';
+import { ConsoleLogger } from '../src/observability/console-logger.js';
+import { noopTracer } from '../src/observability/tracer.js';
 import { createCat } from '../src/use-cases/create-cat.js';
 import { createTestDatabase } from '../tests/helpers/test-db.js';
 
@@ -19,7 +24,14 @@ const { db, teardown } = await createTestDatabase();
 
 try {
   const catRepository = new CatRepositoryPostgres(db);
-  const deps = { catRepository };
+  const deps = {
+    catRepository,
+    clock: () => new Date(),
+    observability: {
+      logger: new ConsoleLogger(),
+      tracer: noopTracer(),
+    },
+  };
 
   // Create a cat
   const cat = await createCat(deps, {

@@ -26,6 +26,16 @@
         "types": "./dist/adapters/postgres.d.cts",
         "default": "./dist/adapters/postgres.cjs"
       }
+    },
+    "./testing": {
+      "import": {
+        "types": "./dist/testing.d.ts",
+        "default": "./dist/testing.js"
+      },
+      "require": {
+        "types": "./dist/testing.d.cts",
+        "default": "./dist/testing.cjs"
+      }
     }
   },
   "files": [
@@ -42,7 +52,7 @@
     "depcruise": "depcruise src",
     "verify-hooks": "node scripts/verify-hooks.js",
     "check:codegen-drift": "tsx scripts/check-codegen-drift.ts",
-    "check": "pnpm lint && pnpm depcruise && pnpm typecheck && pnpm check:codegen-drift && pnpm test:coverage && tsx examples/create-cat.ts && pnpm verify-hooks",
+    "check": "pnpm lint && pnpm depcruise && pnpm typecheck && pnpm check:codegen-drift && pnpm test:coverage && tsx examples/create-cat.ts && tsx examples/create-cat.with-otel.ts && pnpm verify-hooks",
     "db:up": "docker compose -f docker/docker-compose.yml up -d",
     "db:down": "docker compose -f docker/docker-compose.yml down",
     "db:reset": "docker compose -f docker/docker-compose.yml down -v && docker compose -f docker/docker-compose.yml up -d && sleep 2 && pnpm db:migrate",
@@ -64,12 +74,17 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.215.0",
     "kysely": "^0.28.16",
     "pg": "^8.20.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
+    "@opentelemetry/sdk-logs": "0.215.0",
+    "@opentelemetry/sdk-trace-base": "2.7.0",
+    "@opentelemetry/sdk-trace-node": "2.7.0",
     "@testcontainers/postgresql": "^11.14.0",
     "@types/node": "^25.6.0",
     "@types/pg": "^8.20.0",

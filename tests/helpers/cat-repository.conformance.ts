@@ -4,15 +4,23 @@
  * Any adapter implementing CatRepository must pass these tests. This ensures
  * the in-memory adapter and the Postgres adapter conform to the same contract.
  *
+ * Includes behavioral tests (save, find, delete, duplicate rejection) AND
+ * observability tests (every method must produce a span with correct name and
+ * semantic attributes).
+ *
  * Usage:
  *   describeCatRepositoryConformance('Memory', {
  *     factory: () => new CatRepositoryMemory(),
+ *     getSpans: () => testObs.getSpans(),
+ *     resetSpans: () => testObs.reset(),
+ *     expectedDbSystem: 'memory',
  *   });
  *
  * Pattern: future repositories (DogRepository, etc.) should follow the same approach —
  * a shared conformance suite that any adapter implementation must satisfy.
  */
 import { randomUUID } from 'node:crypto';
+import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { CatRepository } from '../../src/adapters/cat-repository.js';
 import type { Cat } from '../../src/domain/cat.js';
@@ -23,6 +31,12 @@ interface ConformanceOptions {
   factory: () => CatRepository | Promise<CatRepository>;
   /** Called before each test to reset state (e.g., truncate tables). Not needed for in-memory. */
   resetState?: () => Promise<void>;
+  /** Returns all finished spans since last reset. Required for span assertions. */
+  getSpans: () => ReadableSpan[];
+  /** Resets the span exporter. Called before each test. */
+  resetSpans: () => void;
+  /** Expected value of `db.system` attribute (e.g., 'postgresql' or 'memory'). */
+  expectedDbSystem: string;
 }
 
 export function describeCatRepositoryConformance(name: string, options: ConformanceOptions) {
@@ -33,8 +47,11 @@ export function describeCatRepositoryConformance(name: string, options: Conforma
       if (options.resetState) {
         await options.resetState();
       }
+      options.resetSpans();
       repo = await options.factory();
     });
+
+    // --- Behavioral tests ---
 
     it('saves and finds a cat by ID', async () => {
       const cat = makeCat({ name: 'Whiskers' });
@@ -87,6 +104,66 @@ export function describeCatRepositoryConformance(name: string, options: Conforma
 
       await expect(repo.save(makeCat({ name }))).rejects.toThrow(CatAlreadyExistsError);
     });
+
+    // --- Span emission tests ---
+
+    it('save emits a db.cats.save span with correct attributes', async () => {
+      const cat = makeCat({ name: 'SpanCat' });
+      await repo.save(cat);
+
+      const span = findSpan(options.getSpans(), 'db.cats.save');
+      expect(span).toBeDefined();
+      expect(span?.attributes['db.system']).toBe(options.expectedDbSystem);
+      expect(span?.attributes['db.operation.name']).toBe('INSERT');
+      expect(span?.attributes['db.collection.name']).toBe('cats');
+    });
+
+    it('findById emits a db.cats.findById span with correct attributes', async () => {
+      await repo.findById(randomUUID());
+
+      const span = findSpan(options.getSpans(), 'db.cats.findById');
+      expect(span).toBeDefined();
+      expect(span?.attributes['db.system']).toBe(options.expectedDbSystem);
+      expect(span?.attributes['db.operation.name']).toBe('SELECT');
+      expect(span?.attributes['db.collection.name']).toBe('cats');
+    });
+
+    it('findByName emits a db.cats.findByName span with correct attributes', async () => {
+      await repo.findByName('Ghost');
+
+      const span = findSpan(options.getSpans(), 'db.cats.findByName');
+      expect(span).toBeDefined();
+      expect(span?.attributes['db.system']).toBe(options.expectedDbSystem);
+      expect(span?.attributes['db.operation.name']).toBe('SELECT');
+      expect(span?.attributes['db.collection.name']).toBe('cats');
+    });
+
+    it('deleteById emits a db.cats.deleteById span with correct attributes', async () => {
+      await repo.deleteById(randomUUID());
+
+      const span = findSpan(options.getSpans(), 'db.cats.deleteById');
+      expect(span).toBeDefined();
+      expect(span?.attributes['db.system']).toBe(options.expectedDbSystem);
+      expect(span?.attributes['db.operation.name']).toBe('DELETE');
+      expect(span?.attributes['db.collection.name']).toBe('cats');
+    });
+
+    it('save records exception on span when duplicate name', async () => {
+      const name = 'SpanErrorCat';
+      await repo.save(makeCat({ name }));
+      options.resetSpans();
+
+      try {
+        await repo.save(makeCat({ name }));
+      } catch {
+        // expected
+      }
+
+      const span = findSpan(options.getSpans(), 'db.cats.save');
+      expect(span).toBeDefined();
+      expect(span?.status.code).toBe(2); // SpanStatusCode.ERROR = 2
+      expect(span?.events.some((e) => e.name === 'exception')).toBe(true);
+    });
   });
 }
 
@@ -98,4 +175,9 @@ function makeCat(overrides: Partial<Cat> = {}): Cat {
     createdAt: new Date(),
     ...overrides,
   };
+}
+
+/** Find a span by name in the finished spans array. */
+function findSpan(spans: ReadableSpan[], name: string): ReadableSpan | undefined {
+  return spans.find((s) => s.name === name);
 }

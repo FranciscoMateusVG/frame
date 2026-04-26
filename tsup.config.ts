@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     'adapters/postgres': 'src/adapters/cat-repository.postgres.ts',
+    testing: 'src/testing/observability.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

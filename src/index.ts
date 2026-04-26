@@ -11,6 +11,14 @@ export { CatIdSchema, CatNameSchema, CreateCatInputSchema } from './domain/cat.j
 // --- Errors ---
 export { CatAlreadyExistsError } from './errors/cat-already-exists.error.js';
 export { InvalidCatNameError } from './errors/invalid-cat-name.error.js';
-export type { CreateCatDeps } from './use-cases/create-cat.js';
+export { ConsoleLogger } from './observability/console-logger.js';
+// --- Observability ---
+export type { Logger } from './observability/logger.js';
+export { NoopLogger } from './observability/noop-logger.js';
+export type { Observability } from './observability/observability.js';
+export { OtelLogger } from './observability/otel-logger.js';
+export type { Span, Tracer } from './observability/tracer.js';
+export { noopTracer, SpanKind, SpanStatusCode, trace } from './observability/tracer.js';
 // --- Use Cases ---
+export type { CreateCatDeps } from './use-cases/create-cat.js';
 export { createCat } from './use-cases/create-cat.js';

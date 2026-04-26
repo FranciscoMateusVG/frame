@@ -2,8 +2,9 @@
  * Postgres adapter conformance + Postgres-specific behavior tests.
  *
  * The conformance suite (shared with the in-memory adapter) covers the core
- * contract: save, find, delete, duplicate rejection. This file adds
- * Postgres-specific tests: concurrency behavior under real database constraints.
+ * contract: save, find, delete, duplicate rejection, AND span emission.
+ * This file adds Postgres-specific tests: concurrency behavior under real
+ * database constraints.
  *
  * Test isolation: beforeEach truncates the cats table, ensuring any test can
  * run in isolation and in any order. Testcontainers provides a fresh DB per suite.
@@ -13,9 +14,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CatRepositoryPostgres } from '../../src/adapters/cat-repository.postgres.js';
 import { CatAlreadyExistsError } from '../../src/errors/cat-already-exists.error.js';
 import { describeCatRepositoryConformance } from '../helpers/cat-repository.conformance.js';
+import { createTestObservability } from '../helpers/observability.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/test-db.js';
 
 let testDb: TestDatabase;
+const testObs = createTestObservability();
 
 beforeAll(async () => {
   testDb = await createTestDatabase();
@@ -23,19 +26,23 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await testDb.teardown();
+  await testObs.shutdown();
 });
 
 /**
  * Conformance suite — same tests that run against the in-memory adapter.
- * Proves the Postgres adapter satisfies the same CatRepository contract.
+ * Proves the Postgres adapter satisfies the same CatRepository contract,
+ * including span emission with correct attributes.
  */
 describeCatRepositoryConformance('Postgres', {
   factory: () => new CatRepositoryPostgres(testDb.db),
   resetState: async () => {
     // Truncate between tests for full isolation.
-    // Pattern: every integration test file should truncate relevant tables in resetState/beforeEach.
     await testDb.db.deleteFrom('cats').execute();
   },
+  getSpans: () => testObs.getSpans(),
+  resetSpans: () => testObs.reset(),
+  expectedDbSystem: 'postgresql',
 });
 
 /**
@@ -46,6 +53,7 @@ describe('CatRepositoryPostgres — Postgres-specific', () => {
 
   beforeEach(async () => {
     await testDb.db.deleteFrom('cats').execute();
+    testObs.reset();
     repo = new CatRepositoryPostgres(testDb.db);
   });
 

@@ -59,15 +59,75 @@ src/
 ├── use-cases/      # One file per use case. Pure functions taking deps as args.
 ├── adapters/       # Infrastructure: interfaces + implementations.
 ├── errors/         # Typed error classes.
+├── observability/  # Logger interface, implementations, tracer re-exports.
+├── testing/        # Exported test helpers (frame/testing subpath).
 └── index.ts        # Public API surface.
 ```
+
+## Observability
+
+Frame ships structured logging and distributed tracing via OpenTelemetry as first-class concerns. The design is **no-op by default**: without an OTel SDK registered, all tracing and logging operations silently do nothing. Zero overhead, zero crashes.
+
+### How It Works
+
+- **Use cases** receive an `Observability` object (Logger + Tracer) via deps. Each use case wraps in a span and logs meaningful business events.
+- **Adapters** use `trace.getTracer('frame')` at module level. Span nesting (e.g., `createCat` → `db.cats.save`) happens automatically via OTel's AsyncLocalStorage-backed context propagation.
+- **Logger** has three implementations: `ConsoleLogger` (dev/examples), `NoopLogger` (tests), and `OtelLogger` (production — forwards to OTel Logs API with automatic trace correlation).
+
+### Wiring Up OTel (Consumer's Responsibility)
+
+Frame deliberately does NOT provide a `setupObservability()` helper. Consumers own SDK configuration — sampling, exporter choice, and resource attributes are your decisions, not Frame's.
+
+See [`examples/create-cat.with-otel.ts`](examples/create-cat.with-otel.ts) for the complete, copy-pasteable setup:
+
+```typescript
+import { trace } from '@opentelemetry/api';
+import { ConsoleSpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+
+const provider = new NodeTracerProvider({
+  spanProcessors: [new SimpleSpanProcessor(new ConsoleSpanExporter())],
+});
+provider.register(); // Sets global provider + enables AsyncLocalStorage context propagation
+
+// Now all Frame spans are live — createCat, db.cats.save, etc.
+```
+
+For production, replace `ConsoleSpanExporter` with your backend's exporter:
+- **OTLP (Jaeger, Grafana Tempo):** `@opentelemetry/exporter-trace-otlp-http`
+- **Honeycomb:** `@honeycombio/opentelemetry-node`
+- **Datadog:** `dd-trace` with OTel compatibility
+
+Consumers may additionally install `@opentelemetry/instrumentation-pg` for automatic query-level Postgres tracing. Frame's manual spans remain valuable for use-case-level and repository-level visibility.
+
+### Testing Spans
+
+Frame exports `createTestObservability()` under the `frame/testing` subpath for consumers to assert on span emission:
+
+```typescript
+import { createTestObservability } from 'frame/testing';
+
+const { observability, getSpans, reset, shutdown } = createTestObservability();
+
+// ... run your use case ...
+const spans = getSpans();
+expect(spans.find(s => s.name === 'myUseCase')).toBeDefined();
+```
+
+### Instrumentation Rules
+
+- **Instrument:** use case entry points, adapter I/O methods (DB, HTTP, external services).
+- **Do NOT instrument:** Zod validation, domain pure functions, value object construction.
+- **PII discipline:** span attributes capture shapes (`cat.name.length`), not raw values.
+- **Adapters emit spans only** — they do not log. Logs come from use cases for meaningful business events.
 
 ### Architectural Rules (enforced by dependency-cruiser)
 
 1. **`domain/` cannot import from anywhere except other `domain/` files.** The domain layer is pure — no infrastructure, no I/O.
 2. **`use-cases/` can import from `domain/` and adapter interfaces**, but never from concrete adapter implementations.
 3. **Nothing internal imports from `index.ts`.** The barrel is for consumers only.
-4. **No circular dependencies, anywhere.**
+4. **No OTel SDK imports in production code.** `src/` (except `src/testing/`) only uses the OTel API. The SDK is for tests, examples, and consumer setup.
+5. **No circular dependencies, anywhere.**
 
 Violations are caught by `pnpm depcruise` and blocked by the pre-push hook.
 
@@ -120,10 +180,15 @@ import type { DogRepository } from '../adapters/dog-repository.js';
 
 export interface CreateDogDeps {
   readonly dogRepository: DogRepository;
+  readonly clock: () => Date;
+  readonly observability: Observability;
 }
 
 export async function createDog(deps: CreateDogDeps, input: { id: string; name: string; breed: string }): Promise<Dog> {
-  // validate, create, persist
+  const { dogRepository, clock, observability } = deps;
+  return observability.tracer.startActiveSpan('createDog', async (span) => {
+    // validate, create, persist — see createCat for the full pattern
+  });
 }
 ```
 
@@ -180,6 +245,8 @@ pnpm check  # must be green
 | DB access | Kysely + kysely-codegen |
 | Migrations | Kysely built-in Migrator |
 | Validation | Zod (external boundaries only) |
+| Tracing | OpenTelemetry API (SDK in tests/examples only) |
+| Logging | OTel Logs API (ConsoleLogger for dev) |
 | Testing | Vitest + fast-check |
 | Lint/format | Biome |
 | Arch rules | dependency-cruiser |
