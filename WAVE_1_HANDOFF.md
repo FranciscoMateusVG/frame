@@ -39,11 +39,6 @@
 - **Why**: It uses `import.meta.dirname` and Node built-ins only. Running it with `node` directly (no `tsx` needed) is faster and has zero dependencies. One fewer moving part.
 - **Affects**: No constraint impact.
 
-### Coverage report shows only adapter files
-- **What changed**: The coverage report only explicitly lists adapter files. Domain and use-case files are 100% covered and V8 omits them from the table (they still appear in the full HTML report).
-- **Why**: Vitest v4's V8 coverage reporter omits files at 100% from the summary table by default.
-- **Affects**: Thresholds are still enforced — the previous run with 75% branches on `create-cat.ts` triggered a threshold failure, confirming enforcement works.
-
 ## 3. File Inventory
 
 ### Workstream A: Project Scaffold + Tooling
@@ -72,11 +67,11 @@
 ### Workstream C: Cat Domain Slice
 | File | Purpose |
 |------|---------|
-| [src/domain/cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/domain/cat.ts) | Cat entity, CatId, CatName value objects, CreateCatInput schema |
+| [src/domain/cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/domain/cat.ts) | Cat entity, CatId, CatName value objects, CreateCatInput with caller-provided ID docs |
 | [src/adapters/cat-repository.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/adapters/cat-repository.ts) | CatRepository interface (port) |
 | [src/adapters/cat-repository.postgres.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/adapters/cat-repository.postgres.ts) | Postgres adapter implementation via Kysely |
-| [src/adapters/cat-repository.memory.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/adapters/cat-repository.memory.ts) | In-memory adapter for tests |
-| [src/use-cases/create-cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/use-cases/create-cat.ts) | createCat use case — pure function with explicit deps |
+| [src/adapters/cat-repository.memory.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/adapters/cat-repository.memory.ts) | In-memory adapter — reference implementation, used by property tests and conformance suite |
+| [src/use-cases/create-cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/use-cases/create-cat.ts) | createCat use case — pure function with explicit deps, caller-provided ID documentation |
 | [src/errors/cat-already-exists.error.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/errors/cat-already-exists.error.ts) | Typed error for duplicate cat names |
 | [src/errors/invalid-cat-name.error.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/errors/invalid-cat-name.error.ts) | Typed error for validation failures |
 | [src/errors/index.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/errors/index.ts) | Error barrel export |
@@ -86,12 +81,19 @@
 | File | Purpose |
 |------|---------|
 | [tests/helpers/test-db.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/helpers/test-db.ts) | Testcontainers helper — Postgres setup, migrations, teardown |
-| [tests/unit/create-cat.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/unit/create-cat.test.ts) | Unit tests for createCat: happy path + all error branches |
-| [tests/unit/cat-domain.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/unit/cat-domain.test.ts) | Unit tests for CatNameSchema, CatIdSchema, CreateCatInputSchema |
-| [tests/unit/cat-property.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/unit/cat-property.test.ts) | Property-based tests: round-trip invariant + validation invariants |
-| [tests/integration/cat-repository.postgres.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/integration/cat-repository.postgres.test.ts) | Integration tests: CRUD, uniqueness, concurrency (Testcontainers) |
+| [tests/helpers/cat-repository.conformance.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/helpers/cat-repository.conformance.ts) | Shared conformance suite — runs identical contract tests against any CatRepository impl |
+| [tests/unit/cat-repository.memory.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/unit/cat-repository.memory.test.ts) | Conformance tests for the in-memory adapter |
+| [tests/unit/cat-domain.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/unit/cat-domain.test.ts) | Unit tests for CatNameSchema, CatIdSchema, CreateCatInputSchema (pure validation, no I/O) |
+| [tests/unit/cat-property.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/unit/cat-property.test.ts) | Property-based tests via fast-check: round-trip invariant + validation invariants |
+| [tests/integration/create-cat.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/integration/create-cat.test.ts) | **Primary behavioral spec** for createCat — happy path, validation, duplicates, idempotency (Postgres) |
+| [tests/integration/cat-repository.postgres.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/integration/cat-repository.postgres.test.ts) | Conformance suite for Postgres adapter + concurrency test |
 | [tests/integration/migration.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/integration/migration.test.ts) | Migration up/down round-trip test |
 | [examples/create-cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/examples/create-cat.ts) | Runnable example: create, fetch, delete a cat via Postgres (Testcontainers) |
+
+#### Deleted files
+| File | Reason |
+|------|--------|
+| ~~tests/unit/create-cat.test.ts~~ | Removed per testing philosophy shift — use case behavior is now specced by integration tests in `tests/integration/create-cat.test.ts` |
 
 ### Workstream E: Guardrails + Docs
 | File | Purpose |
@@ -135,19 +137,16 @@ Three violations detected:
 
 ## 5. Definition of Done — Evidence
 
-Full output of `pnpm check` from the successful push (2026-04-26T15:28:45Z):
+Full output of `pnpm check` after testing philosophy changes (2026-04-26T16:22:50Z):
 
 ```
-🔬 Pre-push gate: running pnpm check...
-This is the canonical quality gate. Do NOT bypass with --no-verify.
-
 > frame@0.1.0 check /Users/franciscomateus/projects/frame
 > pnpm lint && pnpm depcruise && pnpm typecheck && pnpm check:codegen-drift && pnpm test:coverage && tsx examples/create-cat.ts && pnpm verify-hooks
 
 > frame@0.1.0 lint /Users/franciscomateus/projects/frame
 > biome check .
 
-Checked 28 files in 7ms. No fixes applied.
+Checked 30 files in 7ms. No fixes applied.
 
 > frame@0.1.0 depcruise /Users/franciscomateus/projects/frame
 > depcruise src
@@ -161,7 +160,7 @@ Checked 28 files in 7ms. No fixes applied.
 > tsx scripts/check-codegen-drift.ts
 
 🔍 Starting codegen drift check...
-   Postgres container started at postgres://frame:frame@localhost:32790/frame
+   Postgres container started at postgres://frame:frame@localhost:32804/frame
    Migrations applied.
    Types generated to temp file.
 ✅ No codegen drift. Committed types match live schema.
@@ -172,41 +171,41 @@ Checked 28 files in 7ms. No fixes applied.
  RUN  v4.1.5 /Users/franciscomateus/projects/frame
       Coverage enabled with v8
 
- Test Files  5 passed (5)
-      Tests  33 passed (33)
-   Start at  12:28:57
-   Duration  3.27s (transform 122ms, setup 0ms, import 662ms, tests 5.83s, environment 0ms)
+ Test Files  6 passed (6)
+      Tests  44 passed (44)
+   Start at  13:22:55
+   Duration  3.86s (transform 118ms, setup 0ms, import 865ms, tests 10.01s, environment 0ms)
 
  % Coverage report from v8
 -------------------|---------|----------|---------|---------|-------------------
 File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
 -------------------|---------|----------|---------|---------|-------------------
-All files          |   84.44 |       75 |   81.25 |   84.09 |
- adapters          |   73.07 |    71.42 |      75 |   73.07 |
-  ...ory.memory.ts |   54.54 |       25 |      50 |   54.54 | 27-36
+All files          |   95.55 |    81.25 |   93.75 |   95.45 |
+ adapters          |    92.3 |    78.57 |   91.66 |    92.3 |
+  ...ory.memory.ts |     100 |       50 |     100 |     100 | 15-28
   ...y.postgres.ts |   92.85 |       90 |     100 |   92.85 | 28
   database.ts      |       0 |      100 |       0 |       0 | 8
 -------------------|---------|----------|---------|---------|-------------------
 
 =============================== Coverage summary ===============================
-Statements   : 84.44% ( 38/45 )
-Branches     : 75% ( 12/16 )
-Functions    : 81.25% ( 13/16 )
-Lines        : 84.09% ( 37/44 )
+Statements   : 95.55% ( 43/45 )
+Branches     : 81.25% ( 13/16 )
+Functions    : 93.75% ( 15/16 )
+Lines        : 95.45% ( 42/44 )
 ================================================================================
 
 🐱 Frame Example: Create a Cat
 ================================
 
 ✅ Created cat: {
-  id: '0e40e86f-ebfc-4487-a586-a29efc136ac8',
+  id: 'fdc3a41b-f93b-4406-a4c7-be3619f86138',
   name: 'Whiskers',
-  createdAt: 2026-04-26T15:29:03.061Z
+  createdAt: 2026-04-26T16:23:01.876Z
 }
 ✅ Fetched cat: {
-  id: '0e40e86f-ebfc-4487-a586-a29efc136ac8',
+  id: 'fdc3a41b-f93b-4406-a4c7-be3619f86138',
   name: 'Whiskers',
-  createdAt: 2026-04-26T15:29:03.061Z
+  createdAt: 2026-04-26T16:23:01.876Z
 }
 ✅ Deleted cat: true
 ✅ After delete (should be undefined): undefined
@@ -222,7 +221,7 @@ Lines        : 84.09% ( 37/44 )
 ✅ All git hooks verified.
 ```
 
-**Non-deterministic elements**: Testcontainers ports (e.g., `32790`) and UUIDs change each run. All timing is dependent on Docker container startup speed (~2-3s typical).
+**Non-deterministic elements**: Testcontainers ports and UUIDs change each run. Timing depends on Docker container startup (~2-3s typical).
 
 ## 6. Coverage Report Summary
 
@@ -230,29 +229,31 @@ Lines        : 84.09% ( 37/44 )
 -------------------|---------|----------|---------|---------|-------------------
 File               | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
 -------------------|---------|----------|---------|---------|-------------------
-All files          |   84.44 |       75 |   81.25 |   84.09 |
- adapters          |   73.07 |    71.42 |      75 |   73.07 |
-  ...ory.memory.ts |   54.54 |       25 |      50 |   54.54 | 27-36
+All files          |   95.55 |    81.25 |   93.75 |   95.45 |
+ adapters          |    92.3 |    78.57 |   91.66 |    92.3 |
+  ...ory.memory.ts |     100 |       50 |     100 |     100 | 15-28
   ...y.postgres.ts |   92.85 |       90 |     100 |   92.85 | 28
   database.ts      |       0 |      100 |       0 |       0 | 8
 -------------------|---------|----------|---------|---------|-------------------
 ```
 
 **Threshold status**:
-- `src/domain/cat.ts`: 100% across all metrics (not shown in table — V8 omits 100% files). Thresholds (90/90/85) met.
-- `src/use-cases/create-cat.ts`: 100% statements, 100% functions, 100% lines (not shown — 100%). Thresholds (90/90/85) met.
-- Adapter files: No thresholds configured (covered by integration tests instead, as specified).
+- `src/domain/cat.ts`: 100% across all metrics (V8 omits 100% files from table). Thresholds (90/90/85) met.
+- `src/use-cases/create-cat.ts`: 100% across all metrics (V8 omits 100% files). Thresholds (90/90/85) met. **Coverage now provided entirely by integration tests** — no unit tests on use cases.
+- Adapter files: No thresholds configured. Conformance suite brings `cat-repository.memory.ts` to 100% statements/functions.
 
-**Uncovered lines in adapters (no thresholds, informational only)**:
-- `cat-repository.memory.ts` lines 27-36: `findByName()` and `deleteById()` methods not exercised through the use case tests (the in-memory adapter is used via `createCat` which only calls `save()`). These are covered by the Postgres integration tests.
+**Uncovered lines (informational)**:
+- `cat-repository.memory.ts` branches at lines 15-28: The `async` keyword on methods creates uncovered branch artifacts in V8 — all actual code paths are exercised.
 - `cat-repository.postgres.ts` line 28: The `catch` block's non-unique-violation error path (re-throw of unexpected DB errors).
-- `database.ts` line 8: The `createDatabase()` factory function is not called in tests (tests use Testcontainers helper directly).
+- `database.ts` line 8: The `createDatabase()` factory exists for library consumers, not exercised in tests.
+
+**Coverage improvement**: Statements rose from 84.44% → 95.55%, functions from 81.25% → 93.75%, thanks to the conformance suite exercising the in-memory adapter fully.
 
 ## 7. Drift Check Verification
 
 ```
 🔍 Starting codegen drift check...
-   Postgres container started at postgres://frame:frame@localhost:32790/frame
+   Postgres container started at postgres://frame:frame@localhost:32804/frame
    Migrations applied.
    Types generated to temp file.
 ✅ No codegen drift. Committed types match live schema.
@@ -302,14 +303,11 @@ error: failed to push some refs to 'https://github.com/FranciscoMateusVG/frame.g
 
 ## 9. Open Questions / Known Issues
 
-### In-memory adapter coverage gap
-The `CatRepositoryMemory.findByName()` and `deleteById()` methods are not exercised through unit tests (which go through `createCat` → `save()` only). The Postgres integration tests cover these methods thoroughly. A future wave could add dedicated in-memory adapter unit tests, but the value is low — the in-memory adapter is a test double, not production code.
-
 ### `database.ts` at 0% coverage
 The `createDatabase()` factory function is not called in any test. Tests use the Testcontainers helper which creates its own Kysely instance. This function exists for consumers of the library. Consider adding a simple integration test that calls `createDatabase()` against the Testcontainers instance, or accept that it's a trivial factory with no logic to test.
 
 ### Testcontainers startup time
-Each `pnpm check` run spins up Testcontainers Postgres 3 times: once for the codegen drift check, once for integration tests, once for the example. A future optimization could share a single container across all three via a Vitest `globalSetup` or a pre-check script. Current total overhead is ~6-9 seconds, acceptable for now.
+Each `pnpm check` run spins up Testcontainers Postgres multiple times: codegen drift check, integration tests (shared across suites in same run), and the example. A future optimization could share a single container across all via a Vitest `globalSetup` or a pre-check script. Current total overhead is ~6-9 seconds, acceptable for now.
 
 ### `tsup` subpath export for Postgres adapter
 The `tsup.config.ts` entry point for `adapters/postgres` points to `cat-repository.postgres.ts`. When the project is forked and cats are replaced, this entry point needs updating. The README fork guide mentions this.
@@ -319,13 +317,54 @@ Using `import { z } from 'zod/v4'` (Zod v4 subpath import). This is the current 
 
 ## 10. Files That Need Human Review First
 
-1. [src/domain/cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/domain/cat.ts) — Domain entity and value objects. The pattern every future domain type will copy.
-2. [src/use-cases/create-cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/use-cases/create-cat.ts) — Use case pattern: deps-as-args, boundary validation, pure function. The template for all future use cases.
-3. [src/index.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/index.ts) — Public API surface. Verify the export strategy (types + interfaces from root, concrete adapters from subpaths).
-4. [.dependency-cruiser.cjs](https://github.com/FranciscoMateusVG/frame/blob/main/.dependency-cruiser.cjs) — The four architectural rules. Verify they match your intent.
-5. [src/adapters/cat-repository.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/adapters/cat-repository.ts) — Repository interface (port). The contract every adapter must implement.
-6. [src/adapters/cat-repository.postgres.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/adapters/cat-repository.postgres.ts) — Postgres adapter. Verify the Kysely usage pattern and error mapping.
-7. [package.json](https://github.com/FranciscoMateusVG/frame/blob/main/package.json) — Scripts, exports field, dependency versions.
-8. [.claude/CLAUDE.md](https://github.com/FranciscoMateusVG/frame/blob/main/.claude/CLAUDE.md) — Agent operating instructions. Verify the rules match your expectations.
-9. [vitest.config.ts](https://github.com/FranciscoMateusVG/frame/blob/main/vitest.config.ts) — Per-file coverage thresholds. Verify they're scoped correctly.
-10. [tests/helpers/test-db.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/helpers/test-db.ts) — Testcontainers helper. Every integration test and example depends on this.
+1. [src/use-cases/create-cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/use-cases/create-cat.ts) — Use case pattern with caller-provided ID documentation. The template for all future use cases.
+2. [src/domain/cat.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/domain/cat.ts) — Domain entity with CreateCatInput documenting the caller-provided ID design decision.
+3. [tests/integration/create-cat.test.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/integration/create-cat.test.ts) — **New**: primary behavioral spec for createCat, replaces deleted unit tests.
+4. [tests/helpers/cat-repository.conformance.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/helpers/cat-repository.conformance.ts) — **New**: shared conformance suite pattern for adapter testing.
+5. [.dependency-cruiser.cjs](https://github.com/FranciscoMateusVG/frame/blob/main/.dependency-cruiser.cjs) — The four architectural rules.
+6. [src/adapters/cat-repository.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/adapters/cat-repository.ts) — Repository interface (port).
+7. [src/index.ts](https://github.com/FranciscoMateusVG/frame/blob/main/src/index.ts) — Public API surface.
+8. [package.json](https://github.com/FranciscoMateusVG/frame/blob/main/package.json) — Scripts, exports field, dependency versions.
+9. [.claude/CLAUDE.md](https://github.com/FranciscoMateusVG/frame/blob/main/.claude/CLAUDE.md) — Agent operating instructions.
+10. [tests/helpers/test-db.ts](https://github.com/FranciscoMateusVG/frame/blob/main/tests/helpers/test-db.ts) — Testcontainers helper.
+
+## 11. Wave 1 Follow-ups
+
+Changes made after the initial Wave 1 delivery, based on human review feedback:
+
+### Testing philosophy shift
+- **Deleted** `tests/unit/create-cat.test.ts` — unit tests for use cases were redundant with integration tests, harder to read as specs, and bound to internal structure via fakes.
+- **Created** `tests/integration/create-cat.test.ts` — integration tests are now the primary behavioral spec for use cases. Named as specs: `it('creates a cat with the given name')`, not `it('calls save on the repository')`. Covers all error branches (empty name, long name, invalid UUID, whitespace-only, duplicate name) plus idempotency behavior.
+- **Kept** `tests/unit/cat-domain.test.ts` — pure Zod validation, microsecond execution, no I/O. Unit testing earns its place here.
+- **Kept** `tests/unit/cat-property.test.ts` — fast-check runs hundreds of iterations; Postgres would make this impractically slow.
+
+### In-memory adapter retained with conformance suite
+- **Created** `tests/helpers/cat-repository.conformance.ts` — shared test suite that any `CatRepository` implementation must pass. Tests: save/findById, save/findByName, not-found cases, delete, duplicate rejection.
+- **Created** `tests/unit/cat-repository.memory.test.ts` — runs the conformance suite against `CatRepositoryMemory`.
+- **Updated** `tests/integration/cat-repository.postgres.test.ts` — runs the same conformance suite against `CatRepositoryPostgres`, plus Postgres-specific concurrency test. Proves both adapters satisfy the same contract.
+- In-memory adapter justified by: property tests depend on it (fast-check needs sub-millisecond execution), reference implementation for consumers, examples without Docker.
+
+### Caller-provided IDs documented
+- **Updated** `src/use-cases/create-cat.ts` — JSDoc explains: IDs are caller-provided to support idempotent retries and composability with related entities. Callers generate UUIDs; duplicate creates caught by repository unique constraint.
+- **Updated** `src/domain/cat.ts` — `CreateCatInput` JSDoc explains the design rationale: idempotency and composability.
+
+### Test data isolation pattern
+- Integration tests use `beforeEach` to truncate the `cats` table between tests, ensuring full isolation regardless of test order.
+- Pattern documented in `tests/integration/create-cat.test.ts` and `tests/helpers/cat-repository.conformance.ts` (via `resetState` callback).
+- Testcontainers provides a fresh DB per suite; `beforeEach` truncation provides isolation within the suite.
+
+### Coverage thresholds unchanged
+- 90/90/85 thresholds on `src/domain/cat.ts` and `src/use-cases/create-cat.ts` remain.
+- Integration tests hit these numbers (both files at 100%). Coverage doesn't care which test type produced it.
+
+### Confirmation: integration tests cover all previously-unit-tested behavior
+
+| Previously in unit test | Now covered by |
+|------------------------|----------------|
+| Happy path (create + persist) | `create-cat.test.ts`: 'creates a cat with the given name', 'persists the cat so it can be found by ID/name' |
+| Duplicate name → CatAlreadyExistsError | `create-cat.test.ts`: 'rejects a duplicate name with CatAlreadyExistsError' |
+| Empty name → InvalidCatNameError | `create-cat.test.ts`: 'rejects an empty name with InvalidCatNameError' |
+| Name > 100 chars → InvalidCatNameError | `create-cat.test.ts`: 'rejects a name exceeding 100 characters' |
+| Invalid UUID → InvalidCatNameError | `create-cat.test.ts`: 'rejects an invalid UUID with InvalidCatNameError' |
+| Whitespace trimming | `create-cat.test.ts`: 'trims whitespace from the cat name' |
+| Name at exactly 100 chars (boundary) | `create-cat.test.ts`: 'accepts a name at exactly 100 characters' |

@@ -37,6 +37,14 @@ export interface Cat {
 /**
  * Input for creating a new Cat.
  * Validated at external boundaries before reaching use cases.
+ *
+ * The `id` is caller-provided (not server-generated) by design:
+ * - **Idempotency**: callers can safely retry with the same ID after failures.
+ *   Duplicates are caught by the repository's unique constraint.
+ * - **Composability**: callers know the ID before persistence, enabling
+ *   correlation IDs, related-entity setup, and outbox patterns.
+ *
+ * Generate IDs with `crypto.randomUUID()`.
  */
 export const CreateCatInputSchema = z.object({
   id: CatIdSchema,
