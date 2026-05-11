@@ -39,6 +39,7 @@ pnpm db:reset    # drop volume, restart, re-run migrations
 |--------|-------------|
 | `pnpm lint` | Biome lint + format check |
 | `pnpm lint:fix` | Auto-fix lint issues |
+| `pnpm lint:structure` | Enforce folder/file layout via eslint-plugin-project-structure |
 | `pnpm typecheck` | TypeScript strict type check |
 | `pnpm test` | Run all tests (Vitest) |
 | `pnpm test:watch` | Run tests in watch mode |
@@ -136,6 +137,35 @@ expect(spans.find(s => s.name === 'myUseCase')).toBeDefined();
 5. **No circular dependencies, anywhere.**
 
 Violations are caught by `pnpm depcruise` and blocked by the pre-push hook.
+
+### Folder Layout Rules (enforced by eslint-plugin-project-structure)
+
+The import-graph rules above are paired with a structural gate on file and folder layout. ESLint is wired in *solely* to host `eslint-plugin-project-structure` — Biome remains the lint + format authority. Run `pnpm lint:structure` to check, or `pnpm check` to run it as part of the full quality gate.
+
+The rules live in `folder-structure.mjs` and enforce:
+
+- **`src/domain/`, `src/use-cases/`, `src/observability/`, `src/testing/`** — flat folders of kebab-case `*.ts` files. No nested subdirectories.
+- **`src/adapters/`** — `<port>.ts` (the interface) and `<port>.<impl>.ts` (concrete adapters, e.g. `cat-repository.postgres.ts`).
+- **`src/errors/`** — `<entity>-<thing>.error.ts` plus the `index.ts` barrel.
+- **`tests/{unit,integration}/`** — `*.test.ts` and `*.<flavor>.test.ts` (e.g. `cat-repository.memory.test.ts`).
+- **`tests/helpers/`** — flat kebab-case `*.ts`, optionally with a single dotted qualifier (`cat-repository.conformance.ts`).
+- **`examples/`** — three accepted forms: `<use-case>.ts`, `<use-case>.with-<integration>.ts`, `<use-case>.<flavor>.ts` (e.g. `create-cat.hono.ts`).
+- **`migrations/`** — `<YYYYMMDD>_<NNN>_<snake_name>.ts`.
+- **`scripts/`** — flat kebab-case `*.ts`/`*.js`.
+
+To allow a new file shape, extend the structure tree in `folder-structure.mjs`. To make a one-off exception, add it to `ignorePatterns` at the bottom of the same file.
+
+## Examples
+
+The `examples/` directory holds runnable demonstrations of Frame's patterns. Each example is fully self-contained — Testcontainers spins up Postgres on demand — and is executed as part of `pnpm check`.
+
+| File | What it shows |
+|------|--------------|
+| `examples/create-cat.ts` | Bare SDK usage — wire up `CatRepositoryPostgres`, call `createCat`, fetch + delete |
+| `examples/create-cat.with-otel.ts` | Same flow with the full OTel SDK registered. Spans printed via `ConsoleSpanExporter` |
+| `examples/create-cat.hono.ts` | Use case exposed as an HTTP API via [Hono](https://hono.dev). Demonstrates how a transport adapter stays a thin shell — parse → invoke use case → translate domain errors to HTTP status codes (201 / 200 / 409 / 400) |
+
+The Hono example is the template for any transport layer (Hono, Express, Fastify, tRPC). Frame stays transport-agnostic: the use case takes `(deps, input)`, returns a domain entity, and throws typed domain errors. The route handler is the only place HTTP exists.
 
 ## How to Add a New Use Case
 
@@ -255,7 +285,8 @@ pnpm check  # must be green
 | Logging | OTel Logs API (ConsoleLogger for dev) |
 | Testing | Vitest + fast-check |
 | Lint/format | Biome |
-| Arch rules | dependency-cruiser |
+| Arch rules (imports) | dependency-cruiser |
+| Arch rules (layout) | ESLint + eslint-plugin-project-structure |
 | Git hooks | Husky + lint-staged |
 | Build | tsup (ESM + CJS) |
 | Package manager | pnpm |
