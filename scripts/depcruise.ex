@@ -83,7 +83,13 @@ defmodule Mix.Tasks.Frame.Depcruise do
   # %{source_file => MapSet of {:file, path} | {:app, app, module}}
   defp build_graph do
     cwd = File.cwd!()
-    {:ok, modules} = :application.get_key(:frame, :modules)
+    # Read the freshly compiled BEAMs (the loaded app spec may predate this compile).
+    modules =
+      Mix.Project.compile_path()
+      |> Path.join("*.beam")
+      |> Path.wildcard()
+      |> Enum.map(&(&1 |> Path.basename(".beam") |> String.to_atom()))
+
     sources = Map.new(modules, &{&1, relative_source(&1, cwd)})
     external = external_module_apps()
 
@@ -108,7 +114,9 @@ defmodule Mix.Tasks.Frame.Depcruise do
   end
 
   defp relative_source(module, cwd) do
-    module.module_info(:compile)[:source] |> List.to_string() |> Path.relative_to(cwd)
+    beam = Path.join(Mix.Project.compile_path(), "#{module}.beam") |> String.to_charlist()
+    {:ok, {^module, [compile_info: info]}} = :beam_lib.chunks(beam, [:compile_info])
+    info[:source] |> List.to_string() |> Path.relative_to(cwd)
   end
 
   defp external_module_apps do
@@ -129,7 +137,7 @@ defmodule Mix.Tasks.Frame.Depcruise do
   end
 
   defp referenced_modules(module) do
-    beam = :code.which(module)
+    beam = Path.join(Mix.Project.compile_path(), "#{module}.beam") |> String.to_charlist()
 
     {:ok, {^module, [abstract_code: {:raw_abstract_v1, forms}]}} =
       :beam_lib.chunks(beam, [:abstract_code])
@@ -147,7 +155,7 @@ defmodule Mix.Tasks.Frame.Depcruise do
   end
 
   defp matches_to?({:file, path_re, path_not_re}, {:file, path}) do
-    Regex.match?(path_re, path) and not (path_not_re && Regex.match?(path_not_re, path))
+    Regex.match?(path_re, path) and (path_not_re == nil or not Regex.match?(path_not_re, path))
   end
 
   defp matches_to?({:app, apps}, {:app, app, _module}), do: app in apps

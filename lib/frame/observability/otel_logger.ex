@@ -8,10 +8,11 @@ defmodule Frame.Observability.OtelLogger do
   `:logger` events tagged with an OTel instrumentation scope — it never
   touches the SDK.
 
-  Trace correlation is automatic: the OTel API keeps the active span's
-  `otel_trace_id` / `otel_span_id` in the process's logger metadata, so every
-  record emitted inside an active span carries that span's IDs. No manual
-  threading required.
+  Trace correlation is automatic: the active span's `otel_trace_id` /
+  `otel_span_id` travel in the process's logger metadata (re-derived from the
+  active OTel context on every call), so every record emitted inside an
+  active span carries that span's IDs, and records outside a span carry
+  none. No manual threading required.
 
   Without an OTel log handler installed, records only reach whatever other
   `:logger` handlers the application configured (no OTel export).
@@ -49,9 +50,32 @@ defmodule Frame.Observability.OtelLogger do
   @impl true
   def debug(logger, message, attrs), do: emit(logger, :debug, message, attrs)
 
+  @trace_metadata_keys [:otel_trace_id, :otel_span_id, :otel_trace_flags]
+
   defp emit(%__MODULE__{scope: scope}, level, message, attrs) do
-    # The active span context already lives in the process logger metadata
-    # (maintained by the OTel API), so correlation needs no explicit context.
+    sync_trace_metadata()
     :logger.log(level, message, Map.put(attrs, :otel_scope, scope))
+  end
+
+  # The OTel API writes the active span's IDs into the process logger
+  # metadata when a span becomes current, but does not remove them when the
+  # span ends. Re-derive them from the active context so records carry the
+  # current span's IDs — and none outside a span.
+  defp sync_trace_metadata do
+    span_metadata = :otel_span.hex_span_ctx(OpenTelemetry.Tracer.current_span_ctx())
+
+    case :logger.get_process_metadata() do
+      :undefined when span_metadata == %{} ->
+        :ok
+
+      :undefined ->
+        :logger.set_process_metadata(span_metadata)
+
+      metadata ->
+        metadata
+        |> Map.drop(@trace_metadata_keys)
+        |> Map.merge(span_metadata)
+        |> :logger.set_process_metadata()
+    end
   end
 end

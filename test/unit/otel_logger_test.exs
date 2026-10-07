@@ -142,6 +142,9 @@ defmodule Frame.Unit.OtelLoggerTest do
 
   test "log records emitted outside any span have no span context",
        %{logger: logger, table: table} do
+    # As in the reference (same thread, after the in-span test): a span that
+    # has already ended must not leak its context into later records.
+    Tracer.with_span("earlier.op", do: :ok)
     Logger.info(logger, "outside.span")
 
     assert [record] = finished_log_records(table, 1)

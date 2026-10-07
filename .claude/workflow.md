@@ -19,7 +19,7 @@ Save in `docs/specs/<feature>.md`, a GitHub issue, or paste into the spec agent 
 
 **Example:**
 
-> `findCatById` takes a `CatId` and returns the matching `Cat`, or `null` if no cat exists with that id. It does not throw for missing cats — only for malformed inputs (which the boundary validation catches). It emits a `findCatById` span. It does not log. It must be safe to call repeatedly with the same id (idempotent reads).
+> `find_cat_by_id` takes a cat id and returns the matching `%Cat{}`, or `nil` if no cat exists with that id. It does not throw for missing cats — only for malformed inputs (which the boundary validation catches). It emits a `findCatById` span. It does not log. It must be safe to call repeatedly with the same id (idempotent reads).
 
 ### 2. Spec agent writes failing tests
 
@@ -36,9 +36,9 @@ This is the leverage point. Review the test file:
 
 - Do the tests describe the behavior you wanted? Are any tests testing the *implementation* instead of the *behavior*?
 - Are the edge cases covered? Are there obvious cases missing?
-- Are the test names readable as a spec? If you read just the `it(...)` strings, do they describe what the use case does?
+- Are the test names readable as a spec? If you read just the `test "..."` strings, do they describe what the use case does?
 - Are property tests included where invariants exist?
-- Did the spec agent stay in the test files, or did it sneak code into `src/`?
+- Did the spec agent stay in the test files, or did it sneak code into `lib/`?
 
 This is a five-minute task. Don't skip it. Once approved, the tests are the contract — what the implementation agent will be measured against.
 
@@ -51,14 +51,14 @@ Invoke the implementation agent with `.claude/commands/implement-spec.md`. Provi
 - The path to the locked test file.
 - The new use case name.
 
-The agent writes code in `src/` and loops until `pnpm check` is green. It may not modify the test files. It reports back when green.
+The agent writes code in `lib/` and loops until `mix check` is green. It may not modify the test files. It reports back when green.
 
 ### 5. Human reviews the diff and merges
 
-Most of this is a skim — `pnpm check` passing means the contract is satisfied. Focus on:
+Most of this is a skim — `mix check` passing means the contract is satisfied. Focus on:
 
 - Is the code idiomatic? Does it look like the existing patterns?
-- `git diff tests/` — did the implementation agent modify any tests it shouldn't have? (If yes, escalate; this is a violation.)
+- `git diff test/` — did the implementation agent modify any tests it shouldn't have? (If yes, escalate; this is a violation.)
 - Are there obvious gaps the tests didn't catch?
 - Does the diff respect the architectural rules in `CLAUDE.md`?
 
@@ -67,8 +67,8 @@ About ten minutes. Then merge.
 ## Why This Works
 
 - **Behavior as contract.** The tests *are* the spec. There's no separate "what should this do" document drifting out of sync with reality.
-- **Architectural rails prevent drift.** `dependency-cruiser`, type checks, coverage thresholds, and conformance tests all enforce structure independently of what the agents claim.
-- **Binary verification.** `pnpm check` either passes or doesn't. No "looks good to me" approvals.
+- **Architectural rails prevent drift.** `mix frame.depcruise`, the compiler type checker, coverage thresholds, and conformance tests all enforce structure independently of what the agents claim.
+- **Binary verification.** `mix check` either passes or doesn't. No "looks good to me" approvals.
 - **Human time is concentrated where humans add value.** You review 50 lines of test descriptions, not 300 lines of implementation. You set direction, the agents execute.
 
 ## Anti-Patterns to Avoid
@@ -81,7 +81,7 @@ About ten minutes. Then merge.
 
 **Over-specifying tests.** "Test every code path" leads to brittle tests that lock the implementation into one shape. Test *behavior*, not *implementation breadth*. A few sharp tests beat fifty mechanical ones.
 
-**Testing internal calls instead of observable behavior.** "Expect `repository.save` to have been called once" is implementation-coupled. "Expect the cat to be retrievable after creation" is behavior-coupled. Frame prefers the latter — that's why integration tests are the primary spec.
+**Testing internal calls instead of observable behavior.** "Expect `CatRepository.save/2` to have been called once" is implementation-coupled. "Expect the cat to be retrievable after creation" is behavior-coupled. Frame prefers the latter — that's why integration tests are the primary spec.
 
 ## Where to Find Things
 
@@ -89,13 +89,13 @@ About ten minutes. Then merge.
 - Implementation agent prompt: `.claude/commands/implement-spec.md`
 - Architectural rules: `.claude/CLAUDE.md`
 - Existing patterns to model new work after:
-  - Use case: `src/use-cases/create-cat.ts`
-  - Use case behavior tests: `tests/integration/create-cat.test.ts`
-  - Repository integration tests: `tests/integration/cat-repository.postgres.test.ts`
-  - Repository interface: `src/adapters/cat-repository.ts`
-  - Adapters: `src/adapters/cat-repository.{postgres,memory}.ts`
-  - Conformance suite: `tests/helpers/cat-repository.conformance.ts`
-  - Property tests: `tests/unit/cat-property.test.ts`
-  - Observability primitive tests: `tests/unit/logger.test.ts`
-  - Test observability helper: `tests/helpers/observability.ts`
-  - Test database helper: `tests/helpers/test-db.ts`
+  - Use case: `lib/frame/use_cases/create_cat.ex`
+  - Use case behavior tests: `test/integration/create_cat_test.exs`
+  - Repository integration tests: `test/integration/cat_repository.postgres_test.exs`
+  - Repository interface: `lib/frame/adapters/cat_repository.ex`
+  - Adapters: `lib/frame/adapters/cat_repository/{postgres,memory}.ex`
+  - Conformance suite: `test/helpers/cat_repository.conformance.ex`
+  - Property tests: `test/unit/cat_property_test.exs`
+  - Observability primitive tests: `test/unit/logger_test.exs`
+  - Test observability helper: `test/helpers/observability.ex`
+  - Test database helper: `test/helpers/test_db.ex`

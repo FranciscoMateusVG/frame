@@ -20,7 +20,8 @@ defmodule Mix.Tasks.Frame.CheckCodegenDrift do
     Mix.Task.run("app.start")
     Mix.shell().info("🔍 Starting codegen drift check...")
 
-    # 1. Start Testcontainers Postgres
+    # 1. Start Testcontainers Postgres (quiet its readiness polling)
+    Logger.put_application_level(:testcontainers, :info)
     {:ok, _} = Testcontainers.start_link()
 
     config =

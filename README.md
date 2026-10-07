@@ -1,13 +1,14 @@
-# Frame
+# Frame (Elixir)
 
-AI-native TypeScript SDK skeleton — a reusable, domain-agnostic project structure and tooling baseline designed for autonomous AI development.
+AI-native Elixir SDK skeleton — a reusable, domain-agnostic project structure and tooling baseline designed for autonomous AI development.
 
 Frame contains no real business logic. It's a reference implementation with a placeholder domain (**Cats**) that demonstrates the full pattern end-to-end. Fork it, replace the placeholder domain with your own, and start building.
 
+This branch is the Elixir port of the TypeScript reference (`main`). Every TypeScript item and its Elixir counterpart — including every deviation — is listed in [`PARITY.md`](PARITY.md).
+
 ## Prerequisites
 
-- **Node.js** ≥ 20
-- **pnpm** (any recent version)
+- **Elixir** ≥ 1.18 (built-in `JSON`; developed on 1.20 / OTP 29)
 - **Docker** (for Postgres — used by integration tests, examples, and the codegen drift check)
 
 ## Quick Start
@@ -15,281 +16,271 @@ Frame contains no real business logic. It's a reference implementation with a pl
 ```bash
 git clone https://github.com/FranciscoMateusVG/frame.git
 cd frame
-pnpm install
-pnpm check   # runs lint, depcruise, typecheck, codegen drift, tests, examples, hook verification
+git checkout frame-elixir
+mix setup    # deps.get + install the git hooks (core.hooksPath = .githooks)
+mix check    # runs lint, structure, typecheck, depcruise, codegen drift, tests, examples, hook verification
 ```
 
-That's it. `pnpm check` is fully self-contained — it spins up Postgres via Testcontainers, runs migrations, and tears everything down. No manual Docker Compose setup required.
+That's it. `mix check` is fully self-contained — it spins up Postgres via Testcontainers, runs migrations, and tears everything down. No manual Docker Compose setup required.
 
 ### Development Database (Optional)
 
 For interactive development, you can run a persistent Postgres:
 
 ```bash
-pnpm db:up       # start Postgres via Docker Compose (port 54320)
-pnpm db:migrate  # run migrations
-pnpm db:codegen  # regenerate Kysely types from live schema
-pnpm db:down     # stop Postgres
-pnpm db:reset    # drop volume, restart, re-run migrations
+mix db.up       # start Postgres via Docker Compose (port 54320)
+mix db.migrate  # run migrations
+mix db.codegen  # regenerate the Ecto schema module from the live schema
+mix db.down     # stop Postgres
+mix db.reset    # drop volume, restart, re-run migrations
 ```
 
-## Available Scripts
+## Available Commands
 
-| Script | What it does |
+| Command | What it does |
 |--------|-------------|
-| `pnpm lint` | Biome lint + format check |
-| `pnpm lint:fix` | Auto-fix lint issues |
-| `pnpm lint:structure` | Enforce folder/file layout via eslint-plugin-project-structure |
-| `pnpm typecheck` | TypeScript strict type check |
-| `pnpm test` | Run all tests (Vitest) |
-| `pnpm test:watch` | Run tests in watch mode |
-| `pnpm test:coverage` | Run tests with coverage thresholds |
-| `pnpm depcruise` | Check architectural rules |
-| `pnpm check:codegen-drift` | Verify generated types match live schema |
-| `pnpm verify-hooks` | Verify git hooks are installed |
-| `pnpm build` | Build ESM + CJS with types (tsup) |
-| `pnpm check` | **Run all checks** — the Definition of Done |
+| `mix lint` | `mix format --check-formatted` + `mix credo --strict` |
+| `mix lint.fix` | Auto-format (`mix format`) |
+| `mix frame.lint_structure` | Enforce folder/file layout |
+| `mix typecheck` | `mix compile --warnings-as-errors` (Elixir's built-in type checker + all compiler warnings) |
+| `mix test` | Run all tests (ExUnit) |
+| `mix test.coverage` | Run tests with coverage thresholds |
+| `mix frame.depcruise` | Check architectural (import-graph) rules |
+| `mix frame.check_codegen_drift` | Verify the generated schema module matches the live schema |
+| `mix frame.verify_hooks` | Verify git hooks are installed |
+| `mix build` | Build the Hex package tarball (`mix hex.build`) |
+| `mix check` | **Run all checks** — the Definition of Done |
+
+`mix check` and `mix test.coverage` run in the `test` environment automatically.
 
 ## Architecture
 
-Hexagonal-ish, by hand. No framework, no DI container, no decorators.
+Hexagonal-ish, by hand. No framework, no DI container, no macros-as-DI.
 
 ```
-src/
-├── domain/         # Types, entities, value objects. No I/O.
-├── use-cases/      # One file per use case. Pure functions taking deps as args.
-├── adapters/       # Infrastructure: interfaces + implementations.
-├── errors/         # Typed error classes.
-├── observability/  # Logger interface, implementations, tracer re-exports.
-├── testing/        # Exported test helpers (frame/testing subpath).
-└── index.ts        # Public API surface.
+lib/
+├── frame.ex            # Public API surface.
+└── frame/
+    ├── domain/         # Structs, value types, boundary parsers. No I/O.
+    ├── use_cases/      # One file per use case. Plain functions taking deps as args.
+    ├── adapters/       # Infrastructure: ports (behaviours) + implementations.
+    ├── errors/         # Typed errors (exception structs).
+    ├── observability/  # Logger port + implementations, tracer helpers, Observability struct.
+    └── testing/        # Exported test helpers (Frame.Testing). Uses the OTel SDK.
 ```
+
+Ports are behaviours whose implementations are structs: `Frame.Adapters.CatRepository` (the port) dispatches on the struct it is given (`%CatRepository.Postgres{}`, `%CatRepository.Memory{}`), so use cases depend only on the port.
+
+Typed errors are returned, not raised: `create_cat/2` returns `{:ok, cat}` or `{:error, %InvalidCatNameError{}}` / `{:error, %CatAlreadyExistsError{}}`. Unexpected failures (database down, bugs) raise.
 
 ## Observability
 
-Frame ships structured logging and distributed tracing via OpenTelemetry as first-class concerns. The design is **no-op by default**: without an OTel SDK registered, all tracing and logging operations silently do nothing. Zero overhead, zero crashes.
+Frame ships structured logging and distributed tracing via OpenTelemetry as first-class concerns. The design is **no-op by default**: without the OTel SDK started, all tracing operations silently do nothing. Zero overhead, zero crashes.
 
 ### How It Works
 
-- **Use cases** receive an `Observability` object (Logger + Tracer) via deps. Each use case wraps in a span and logs meaningful business events.
-- **Adapters** use `trace.getTracer('frame')` at module level. Span nesting (e.g., `createCat` → `db.cats.save`) happens automatically via OTel's AsyncLocalStorage-backed context propagation.
-- **Logger** has three implementations: `ConsoleLogger` (dev/examples), `NoopLogger` (tests), and `OtelLogger` (production — forwards to OTel Logs API with automatic trace correlation).
+- **Use cases** receive an `%Observability{logger, tracer}` struct via deps. Each use case wraps in a span and logs meaningful business events.
+- **Adapters** use their application's tracer through the `OpenTelemetry.Tracer` macros (the BEAM equivalent of `trace.getTracer('frame')`). Span nesting (e.g. `createCat` → `db.cats.save`) happens automatically via OTel's process-local context propagation.
+- **Logger** has three implementations: `ConsoleLogger` (dev/examples), `NoopLogger` (tests), and `OtelLogger` (production — emits through OTP `:logger`, the OTel logs bridge on the BEAM, with automatic trace correlation).
 
 ### Wiring Up OTel (Consumer's Responsibility)
 
-Frame deliberately does NOT provide a `setupObservability()` helper. Consumers own SDK configuration — sampling, exporter choice, and resource attributes are your decisions, not Frame's.
+Frame deliberately does NOT provide a `setup_observability()` helper. Consumers own SDK configuration — sampling, exporter choice, and resource attributes are your decisions, not Frame's.
 
-Install the OTel SDK packages (listed as optional peer dependencies):
+Add the SDK (Frame lists it as an optional dependency):
 
-```bash
-pnpm add @opentelemetry/sdk-trace-base @opentelemetry/sdk-trace-node
+```elixir
+{:opentelemetry, "~> 1.7"}
 ```
 
-See [`examples/create-cat.with-otel.ts`](examples/create-cat.with-otel.ts) for the complete, copy-pasteable setup:
+See [`examples/create_cat.with_otel.exs`](examples/create_cat.with_otel.exs) for the complete, copy-pasteable setup:
 
-```typescript
-import { trace } from '@opentelemetry/api';
-import { ConsoleSpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+```elixir
+Application.put_env(:opentelemetry, :span_processor, :simple)
+Application.put_env(:opentelemetry, :traces_exporter, {:otel_exporter_stdout, []})
+{:ok, _} = Application.ensure_all_started(:opentelemetry)
 
-const provider = new NodeTracerProvider({
-  spanProcessors: [new SimpleSpanProcessor(new ConsoleSpanExporter())],
-});
-provider.register(); // Sets global provider + enables AsyncLocalStorage context propagation
-
-// Now all Frame spans are live — createCat, db.cats.save, etc.
+# Now all Frame spans are live — createCat, db.cats.save, etc.
 ```
 
-For production, replace `ConsoleSpanExporter` with your backend's exporter:
-- **OTLP (Jaeger, Grafana Tempo):** `@opentelemetry/exporter-trace-otlp-http`
-- **Honeycomb:** `@honeycombio/opentelemetry-node`
-- **Datadog:** `dd-trace` with OTel compatibility
+For production, configure an exporter instead of stdout:
+- **OTLP (Jaeger, Grafana Tempo):** `opentelemetry_exporter` with `traces_exporter: :otlp`
+- **Honeycomb / Datadog:** their OTLP endpoints via `opentelemetry_exporter`
 
-Consumers may additionally install `@opentelemetry/instrumentation-pg` for automatic query-level Postgres tracing. Frame's manual spans remain valuable for use-case-level and repository-level visibility.
+For logs, install the SDK log handler (`otel_log_handler` from `opentelemetry_experimental`) as a `:logger` handler; `OtelLogger` records then flow to it with trace IDs attached.
 
 ### Testing Spans
 
-Frame exports `createTestObservability()` under the `frame/testing` subpath for consumers to assert on span emission:
+Frame exports `Frame.Testing.Observability.create_test_observability/0` (compiled when the optional SDK dependency is present) for consumers to assert on span emission:
 
-```typescript
-import { createTestObservability } from 'frame/testing';
+```elixir
+alias Frame.Testing.Observability, as: TestObs
 
-const { observability, getSpans, reset, shutdown } = createTestObservability();
+test_obs = TestObs.create_test_observability()
+on_exit(fn -> TestObs.shutdown(test_obs) end)
 
-// ... run your use case ...
-const spans = getSpans();
-expect(spans.find(s => s.name === 'myUseCase')).toBeDefined();
+# ... run your use case with observability: test_obs.observability ...
+assert Enum.find(TestObs.get_spans(test_obs), &(&1.name == "myUseCase"))
 ```
 
 ### Instrumentation Rules
 
-- **Instrument:** use case entry points, adapter I/O methods (DB, HTTP, external services).
-- **Do NOT instrument:** Zod validation, domain pure functions, value object construction.
+- **Instrument:** use case entry points, adapter I/O functions (DB, HTTP, external services).
+- **Do NOT instrument:** boundary parsing/validation, domain pure functions, value construction.
 - **PII discipline:** span attributes capture shapes (`cat.name.length`), not raw values.
 - **Adapters emit spans only** — they do not log. Logs come from use cases for meaningful business events.
 
-### Architectural Rules (enforced by dependency-cruiser)
+### Architectural Rules (enforced by `mix frame.depcruise`)
 
-1. **`domain/` cannot import from anywhere except other `domain/` files.** The domain layer is pure — no infrastructure, no I/O.
-2. **`use-cases/` can import from `domain/` and adapter interfaces**, but never from concrete adapter implementations.
-3. **Nothing internal imports from `index.ts`.** The barrel is for consumers only.
-4. **No OTel SDK imports in production code.** `src/` (except `src/testing/`) only uses the OTel API. The SDK is for tests, examples, and consumer setup.
+1. **`domain/` cannot depend on anything in `lib/` except other `domain/` files.** The domain layer is pure — no infrastructure, no I/O.
+2. **`use_cases/` can depend on `domain/` and adapter ports**, but never on concrete adapter implementations.
+3. **Nothing internal depends on `lib/frame.ex`.** The entry point is for consumers only.
+4. **No OTel SDK in production code.** `lib/` (except `lib/frame/testing/`) only uses the OTel API. The SDK is for tests, examples, and consumer setup.
 5. **No circular dependencies, anywhere.**
 
-Violations are caught by `pnpm depcruise` and blocked by the pre-push hook.
+The gate reads the compiled BEAM debug info, so calls, struct literals, typespecs and captures all count as dependencies. Violations fail `mix check` and therefore the pre-push hook.
 
-### Folder Layout Rules (enforced by eslint-plugin-project-structure)
+### Folder Layout Rules (enforced by `mix frame.lint_structure`)
 
-The import-graph rules above are paired with a structural gate on file and folder layout. ESLint is wired in *solely* to host `eslint-plugin-project-structure` — Biome remains the lint + format authority. Run `pnpm lint:structure` to check, or `pnpm check` to run it as part of the full quality gate.
+The import-graph rules above are paired with a structural gate on file and folder layout (rules live in `scripts/lint_structure.ex`):
 
-The rules live in `folder-structure.mjs` and enforce:
+- **`lib/frame/domain/`, `use_cases/`, `observability/`, `testing/`** — flat folders of snake_case `*.ex` files. No nested subdirectories.
+- **`lib/frame/adapters/`** — `<port>.ex` (the behaviour) and `<port>/<impl>.ex` (concrete adapters, e.g. `cat_repository/postgres.ex`).
+- **`lib/frame/errors/`** — `<entity>_<thing>_error.ex`.
+- **`test/{unit,integration}/`** — `*_test.exs` and `*.<flavor>_test.exs` (e.g. `cat_repository.memory_test.exs`).
+- **`test/helpers/`** — flat snake_case `*.ex`, optionally with one dotted qualifier (`cat_repository.conformance.ex`).
+- **`examples/`** — `<use_case>.exs`, `<use_case>.with_<integration>.exs`, `<use_case>.<flavor>.exs` (e.g. `create_cat.plug.exs`).
+- **`migrations/`** — `<YYYYMMDD>_<NNN>_<snake_name>.exs` (snake_case shape enforced).
+- **`scripts/`** — flat snake_case `*.ex`/`*.exs` (the Mix tasks behind the gate).
 
-- **`src/domain/`, `src/use-cases/`, `src/observability/`, `src/testing/`** — flat folders of kebab-case `*.ts` files. No nested subdirectories.
-- **`src/adapters/`** — `<port>.ts` (the interface) and `<port>.<impl>.ts` (concrete adapters, e.g. `cat-repository.postgres.ts`).
-- **`src/errors/`** — `<entity>-<thing>.error.ts` plus the `index.ts` barrel.
-- **`tests/{unit,integration}/`** — `*.test.ts` and `*.<flavor>.test.ts` (e.g. `cat-repository.memory.test.ts`).
-- **`tests/helpers/`** — flat kebab-case `*.ts`, optionally with a single dotted qualifier (`cat-repository.conformance.ts`).
-- **`examples/`** — three accepted forms: `<use-case>.ts`, `<use-case>.with-<integration>.ts`, `<use-case>.<flavor>.ts` (e.g. `create-cat.hono.ts`).
-- **`migrations/`** — `<YYYYMMDD>_<NNN>_<snake_name>.ts`.
-- **`scripts/`** — flat kebab-case `*.ts`/`*.js`.
-
-To allow a new file shape, extend the structure tree in `folder-structure.mjs`. To make a one-off exception, add it to `ignorePatterns` at the bottom of the same file.
+To allow a new file shape, extend `structure/0` in `scripts/lint_structure.ex`. To make a one-off exception, add it to `@ignore_patterns`.
 
 ## Examples
 
-The `examples/` directory holds runnable demonstrations of Frame's patterns. Each example is fully self-contained — Testcontainers spins up Postgres on demand — and is executed as part of `pnpm check`.
+The `examples/` directory holds runnable demonstrations of Frame's patterns. Each example is fully self-contained — Testcontainers spins up Postgres on demand — and is executed as part of `mix check` (`MIX_ENV=test mix run examples/<file>`).
 
 | File | What it shows |
 |------|--------------|
-| `examples/create-cat.ts` | Bare SDK usage — wire up `CatRepositoryPostgres`, call `createCat`, fetch + delete |
-| `examples/create-cat.with-otel.ts` | Same flow with the full OTel SDK registered. Spans printed via `ConsoleSpanExporter` |
-| `examples/create-cat.hono.ts` | Use case exposed as an HTTP API via [Hono](https://hono.dev). Demonstrates how a transport adapter stays a thin shell — parse → invoke use case → translate domain errors to HTTP status codes (201 / 200 / 409 / 400) |
+| `examples/create_cat.exs` | Bare SDK usage — wire up `CatRepository.Postgres`, call `create_cat`, fetch + delete |
+| `examples/create_cat.with_otel.exs` | Same flow with the full OTel SDK started. Spans printed by the stdout exporter |
+| `examples/create_cat.plug.exs` | Use case exposed as an HTTP API via [Plug](https://hexdocs.pm/plug) + [Bandit](https://hexdocs.pm/bandit). Demonstrates how a transport adapter stays a thin shell — parse → invoke use case → translate domain errors to HTTP status codes (201 / 200 / 404 / 409 / 400) |
 
-The Hono example is the template for any transport layer (Hono, Express, Fastify, tRPC). Frame stays transport-agnostic: the use case takes `(deps, input)`, returns a domain entity, and throws typed domain errors. The route handler is the only place HTTP exists.
+The Plug example is the template for any transport layer (Plug, Phoenix, gRPC). Frame stays transport-agnostic: the use case takes `(deps, input)`, returns `{:ok, entity}` or a typed `{:error, error}`. The route handler is the only place HTTP exists.
 
 ## How to Add a New Use Case
 
-Step-by-step recipe:
-
 ### 1. Define the domain types
 
-Create or extend files in `src/domain/`:
+```elixir
+# lib/frame/domain/dog.ex
+defmodule Frame.Domain.Dog do
+  @enforce_keys [:id, :name, :breed, :created_at]
+  defstruct [:id, :name, :breed, :created_at]
 
-```typescript
-// src/domain/dog.ts
-import { z } from 'zod/v4';
+  @type t :: %__MODULE__{id: String.t(), name: String.t(), breed: String.t(), created_at: DateTime.t()}
 
-export const DogNameSchema = z.string().trim().min(1).max(100);
-export type DogName = string;
-
-export interface Dog {
-  readonly id: string;
-  readonly name: DogName;
-  readonly breed: string;
-  readonly createdAt: Date;
-}
+  @spec parse_dog_name(term()) :: {:ok, String.t()} | {:error, [String.t()]}
+  def parse_dog_name(value), do: ...
+end
 ```
 
-### 2. Define the repository interface
+### 2. Define the repository port
 
-```typescript
-// src/adapters/dog-repository.ts
-import type { Dog } from '../domain/dog.js';
+```elixir
+# lib/frame/adapters/dog_repository.ex
+defmodule Frame.Adapters.DogRepository do
+  alias Frame.Domain.Dog
 
-export interface DogRepository {
-  save(dog: Dog): Promise<void>;
-  findById(id: string): Promise<Dog | undefined>;
-}
+  @callback save(struct(), Dog.t()) :: :ok | {:error, Exception.t()}
+  @callback find_by_id(struct(), String.t()) :: Dog.t() | nil
+
+  def save(%impl{} = repo, dog), do: impl.save(repo, dog)
+  def find_by_id(%impl{} = repo, id), do: impl.find_by_id(repo, id)
+end
 ```
 
 ### 3. Implement the adapters
 
-- `src/adapters/dog-repository.memory.ts` — for tests
-- `src/adapters/dog-repository.postgres.ts` — for production
+- `lib/frame/adapters/dog_repository/memory.ex` — for tests
+- `lib/frame/adapters/dog_repository/postgres.ex` — for production
 
 ### 4. Write the use case
 
-```typescript
-// src/use-cases/create-dog.ts
-import type { Dog } from '../domain/dog.js';
-import type { DogRepository } from '../adapters/dog-repository.js';
+```elixir
+# lib/frame/use_cases/create_dog.ex
+defmodule Frame.UseCases.CreateDog do
+  @type deps :: %{dog_repository: struct(), clock: (-> DateTime.t()), observability: Observability.t()}
 
-export interface CreateDogDeps {
-  readonly dogRepository: DogRepository;
-  readonly clock: () => Date;
-  readonly observability: Observability;
-}
-
-export async function createDog(deps: CreateDogDeps, input: { id: string; name: string; breed: string }): Promise<Dog> {
-  const { dogRepository, clock, observability } = deps;
-  return observability.tracer.startActiveSpan('createDog', async (span) => {
-    // validate, create, persist — see createCat for the full pattern
-  });
-}
+  def create_dog(%{dog_repository: repo, clock: clock, observability: obs}, input) do
+    :otel_tracer.with_span(obs.tracer, "createDog", %{}, fn span ->
+      # validate, create, persist — see Frame.UseCases.CreateCat for the full pattern
+    end)
+  end
+end
 ```
 
 ### 5. Add errors
 
-```typescript
-// src/errors/dog-already-exists.error.ts
-export class DogAlreadyExistsError extends Error {
-  public readonly code = 'DOG_ALREADY_EXISTS' as const;
-  constructor(public readonly name: string) {
-    super(`A dog named "${name}" already exists.`);
-  }
-}
+```elixir
+# lib/frame/errors/dog_already_exists_error.ex
+defmodule Frame.Errors.DogAlreadyExistsError do
+  defexception [:name, :message, code: "DOG_ALREADY_EXISTS"]
+
+  @impl true
+  def exception(name), do: %__MODULE__{name: name, message: ~s(A dog named "#{name}" already exists.)}
+end
 ```
 
-### 6. Export from index.ts
+### 6. Expose from `Frame`
 
-Add types, use case, and adapter interface to `src/index.ts`. Do **not** export concrete adapters from here.
+Document the new modules in `lib/frame.ex` and add a `defdelegate` for the use case. Do **not** surface concrete adapters there.
 
 ### 7. Add migration
 
-Create a new migration in `migrations/`, run `pnpm db:codegen`, and commit the updated generated types.
+Create a new migration in `migrations/`, run `mix db.codegen`, and commit the updated `lib/frame/adapters/db_types.generated.ex`.
 
 ### 8. Write tests
 
-- Unit tests in `tests/unit/`
-- Integration tests in `tests/integration/`
-- Property-based tests using fast-check
+- Unit tests in `test/unit/`
+- Integration tests in `test/integration/`
+- Property-based tests using StreamData
 
 ### 9. Verify
 
 ```bash
-pnpm check  # must be green
+mix check  # must be green
 ```
 
 ## How to Fork Frame for a New Project
 
 1. **Fork or clone** this repo
-2. **Rename** `frame` → your project name in `package.json`
-3. **Delete** everything in `src/domain/`, `src/use-cases/`, `src/adapters/` (except `database.ts` and the generated types), `src/errors/`, and `tests/`
+2. **Rename** `:frame` / `Frame` → your project name in `mix.exs` and module names
+3. **Delete** everything in `lib/frame/domain/`, `lib/frame/use_cases/`, `lib/frame/adapters/` (except `database.ex` and the generated schema), `lib/frame/errors/`, and the tests
 4. **Delete** `migrations/` contents and create your own
-5. **Update** `src/index.ts` to export your domain
-6. **Update** `tsup.config.ts` entry points
-7. **Run** `pnpm db:codegen` after creating your first migration
-8. **Replace** the Cat examples with your own in `examples/`
-9. **Run** `pnpm check` to verify everything is clean
+5. **Update** `lib/frame.ex` to expose your domain
+6. **Run** `mix db.codegen` after creating your first migration
+7. **Replace** the Cat examples with your own in `examples/`
+8. **Run** `mix check` to verify everything is clean
 
 ## Stack
 
 | Concern | Tool |
 |---------|------|
-| Language | TypeScript (strict) |
+| Language | Elixir (compiler type checker, warnings as errors) |
 | Database | PostgreSQL 16 |
-| DB access | Kysely + kysely-codegen |
-| Migrations | Kysely built-in Migrator |
-| Validation | Zod (external boundaries only) |
-| Tracing | OpenTelemetry API (SDK in tests/examples only) |
-| Logging | OTel Logs API (ConsoleLogger for dev) |
-| Testing | Vitest + fast-check |
-| Lint/format | Biome |
-| Arch rules (imports) | dependency-cruiser |
-| Arch rules (layout) | ESLint + eslint-plugin-project-structure |
-| Git hooks | Husky + lint-staged |
-| Build | tsup (ESM + CJS) |
-| Package manager | pnpm |
+| DB access | Ecto (`Ecto.Query`) + Postgrex |
+| Migrations | `Ecto.Migrator` |
+| Schema codegen | `mix frame.db_codegen` (Ecto schema from the live schema) |
+| Validation | Hand-written boundary parsers in the domain (Zod-compatible semantics) |
+| Tracing | OpenTelemetry API (`opentelemetry_api`; SDK in tests/examples only) |
+| Logging | OTP `:logger` as the OTel logs bridge (ConsoleLogger for dev) |
+| Testing | ExUnit + StreamData + testcontainers-elixir |
+| Lint/format | `mix format` + Credo |
+| Arch rules (imports) | `mix frame.depcruise` (BEAM debug-info dependency graph) |
+| Arch rules (layout) | `mix frame.lint_structure` |
+| Git hooks | `.githooks/` via `core.hooksPath` |
+| HTTP example | Plug + Bandit |
+| Build | `mix hex.build` |
 
 ## License
 
