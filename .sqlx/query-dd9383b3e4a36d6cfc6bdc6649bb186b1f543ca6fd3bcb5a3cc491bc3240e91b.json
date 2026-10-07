@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO cats (id, name, created_at) VALUES ($1::text::uuid, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Varchar",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dd9383b3e4a36d6cfc6bdc6649bb186b1f543ca6fd3bcb5a3cc491bc3240e91b"
+}

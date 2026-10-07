@@ -1,0 +1,11 @@
+[package]
+name = "frame-testing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+frame-observability.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true

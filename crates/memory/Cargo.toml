@@ -1,0 +1,13 @@
+[package]
+name = "frame-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+frame-domain.workspace = true
+frame-errors.workspace = true
+frame-port.workspace = true
+frame-observability.workspace = true
+async-trait.workspace = true

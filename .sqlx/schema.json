@@ -1,0 +1,26 @@
+[
+  {
+    "column": "id",
+    "default": null,
+    "length": null,
+    "nullable": "NO",
+    "table": "cats",
+    "type": "uuid"
+  },
+  {
+    "column": "name",
+    "default": null,
+    "length": 100,
+    "nullable": "NO",
+    "table": "cats",
+    "type": "varchar"
+  },
+  {
+    "column": "created_at",
+    "default": "now()",
+    "length": null,
+    "nullable": "NO",
+    "table": "cats",
+    "type": "timestamptz"
+  }
+]

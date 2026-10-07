@@ -1,0 +1,11 @@
+[package]
+name = "frame-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+opentelemetry.workspace = true
+chrono.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "frame-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+frame-domain.workspace = true
+frame-errors.workspace = true
+frame-port.workspace = true
+frame-observability.workspace = true
+opentelemetry.workspace = true
+async-trait.workspace = true
+sqlx.workspace = true

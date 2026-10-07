@@ -1,0 +1,11 @@
+[package]
+name = "frame-port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+frame-domain.workspace = true
+frame-errors.workspace = true
+async-trait.workspace = true

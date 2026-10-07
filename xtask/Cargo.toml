@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+tokio.workspace = true
+testcontainers.workspace = true
+sqlx.workspace = true
+serde_json.workspace = true
+syn = { version = "2", features = ["full", "visit"] }

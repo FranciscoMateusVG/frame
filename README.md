@@ -1,296 +1,197 @@
-# Frame
+# Frame — Rust
 
-AI-native TypeScript SDK skeleton — a reusable, domain-agnostic project structure and tooling baseline designed for autonomous AI development.
+Rust port of the AI-native Frame SDK template at TypeScript `main` commit
+`7a097f5e3cf52f2526b259958e755cb7298cec2d` (including Wave 3).
+Cats are a placeholder, not a product. Replace the domain, retain the rails.
+See [PARITY.md](PARITY.md) for the exact mapping and unavoidable differences.
 
-Frame contains no real business logic. It's a reference implementation with a placeholder domain (**Cats**) that demonstrates the full pattern end-to-end. Fork it, replace the placeholder domain with your own, and start building.
+## Prerequisites and quick start
 
-## Prerequisites
+- Rust/Cargo with rustfmt and Clippy (verified on Rust **1.94.1**, stable).
+- Docker running; tests start **PostgreSQL 16** themselves using testcontainers-rs.
+- LLVM coverage tools matching `rustc -vV`'s LLVM major. With rustup:
+  `rustup component add llvm-tools-preview`. Alternatively set `LLVM_COV` and
+  `LLVM_PROFDATA` to matching binaries. Matching Homebrew `llvm@<major>` is also
+  auto-detected. Nothing is installed by the check command.
+- `just` is optional: every recipe delegates to Cargo.
 
-- **Node.js** ≥ 20
-- **pnpm** (any recent version)
-- **Docker** (for Postgres — used by integration tests, examples, and the codegen drift check)
-
-## Quick Start
-
-```bash
-git clone https://github.com/FranciscoMateusVG/frame.git
+```sh
+git clone --branch frame-rust https://github.com/FranciscoMateusVG/frame.git
 cd frame
-pnpm install
-pnpm check   # runs lint, depcruise, typecheck, codegen drift, tests, examples, hook verification
+cargo xtask install-hooks
+cargo xtask check                 # OR: just check
 ```
 
-That's it. `pnpm check` is fully self-contained — it spins up Postgres via Testcontainers, runs migrations, and tears everything down. No manual Docker Compose setup required.
+The gate is self-contained: fmt, architecture/layout, Clippy `-D warnings`,
+all-target strict checking, SQLx/schema drift against a fresh container, **all
+workspace tests with coverage thresholds**, three real-Postgres examples, hooks.
+It stops on the first failure. No Compose database, SQLx CLI, Node, or pnpm is
+needed. The TypeScript reference lives on `main`, not in this branch.
 
-### Development Database (Optional)
+## Commands
 
-For interactive development, you can run a persistent Postgres:
+| Command | Purpose |
+|---|---|
+| `cargo xtask check` / `just check` | Canonical binary gate |
+| `cargo fmt --all` | Format |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Lint |
+| `cargo xtask architecture` | Check declared dependencies, parsed module imports/cycles, layout |
+| `cargo check --workspace --all-targets --locked` | Check every library, example, test, and tool |
+| `cargo test --workspace --locked` | Full tests (real containers required) |
+| `cargo xtask coverage` | Full instrumented tests + per-core-file coverage thresholds |
+| `cargo xtask check-codegen` | Fresh Postgres → migrate → regenerate query metadata/schema → compare |
+| `cargo xtask codegen` | Regenerate and write `.sqlx/` after query/migration changes |
+| `just build` / `cargo build -p frame -p frame-postgres -p frame-testing --locked` | Build the three SDK distribution entrypoints (TS tsup counterpart) |
+| `just build-all` / `cargo build --workspace --all-targets --locked` | Build all libraries, tests, tools and example executables |
+| `cargo build --release -p frame-examples --bin create_cat_axum` | Release HTTP demo executable |
+| `cargo xtask verify-hooks` | Check hooks exist, are executable and invoke required commands |
+| `cargo xtask install-hooks` | Configure Git to use the checked-in, dependency-free hook wrappers |
+| `just db-up` / `just db-down` | Optional persistent development database (port 54320) |
+| `cargo xtask migrate` | Apply migrations to `DATABASE_URL` or the Compose default |
 
-```bash
-pnpm db:up       # start Postgres via Docker Compose (port 54320)
-pnpm db:migrate  # run migrations
-pnpm db:codegen  # regenerate Kysely types from live schema
-pnpm db:down     # stop Postgres
-pnpm db:reset    # drop volume, restart, re-run migrations
-```
-
-## Available Scripts
-
-| Script | What it does |
-|--------|-------------|
-| `pnpm lint` | Biome lint + format check |
-| `pnpm lint:fix` | Auto-fix lint issues |
-| `pnpm lint:structure` | Enforce folder/file layout via eslint-plugin-project-structure |
-| `pnpm typecheck` | TypeScript strict type check |
-| `pnpm test` | Run all tests (Vitest) |
-| `pnpm test:watch` | Run tests in watch mode |
-| `pnpm test:coverage` | Run tests with coverage thresholds |
-| `pnpm depcruise` | Check architectural rules |
-| `pnpm check:codegen-drift` | Verify generated types match live schema |
-| `pnpm verify-hooks` | Verify git hooks are installed |
-| `pnpm build` | Build ESM + CJS with types (tsup) |
-| `pnpm check` | **Run all checks** — the Definition of Done |
+Do not use destructive database reset on valuable data. Testcontainers owns
+only the temporary containers it creates. `.sqlx/` is committed so ordinary
+builds do not connect to any database; the gate independently verifies it.
 
 ## Architecture
 
-Hexagonal-ish, by hand. No framework, no DI container, no decorators.
+```text
+crates/domain/         Cat, input schemas: data + pure validation, no I/O
+crates/errors/         thiserror typed validation/duplicate/infrastructure errors
+crates/port/           CatRepository trait only
+crates/use-cases/      create_cat(deps, input); explicit repository, clock, observability
+crates/memory/         memory implementation (same conformance suite)
+crates/postgres/       SQLx implementation + production connection factory/migrations
+crates/observability/  Logger, Console/Noop/OTel, tracer API and Observability
+crates/frame/          public facade (NOT concrete repository implementations)
+crates/testing/        separate consumer observability test helper (OTel SDK allowed)
+tests/                 unit/, integration/, helpers/; proptest stays unit/memory
+examples/              bare SDK, OTel wiring, Axum HTTP transport
+migrations/            ordered up/down SQL
+xtask/                 canonical checks; architecture uses Cargo metadata + syn AST
+```
 
+No application framework or DI container. `async_trait` only makes the async
+repository port object-safe; it does not discover or construct dependencies.
+Axum lives in the **example** package, not in the SDK. The HTTP composition root
+constructs the required real Postgres repository; integration tests exercise that
+same root through a listening socket and real network requests.
+
+Cargo's package boundaries reject undeclared dependencies and package cycles.
+The architecture check additionally locks permitted production dependencies,
+rejects internal facade/SDK imports, catches local module cycles, and validates
+flat snake_case source layout. Change its explicit structure/allowlists when
+intentionally introducing a layer. Domain and use-case rules cannot be bypassed
+simply by adding a forbidden dependency to a manifest.
+
+### Basic SDK use
+
+```rust,ignore
+use frame::{create_cat, CreateCatDeps, CreateCatInput, Observability};
+use frame_postgres::CatRepositoryPostgres;
+
+let db = frame::create_database(&database_url).await?;
+let repository = CatRepositoryPostgres::new(db);
+let obs = Observability::default();
+let clock = || std::time::SystemTime::now().into();
+let cat = create_cat(
+    CreateCatDeps { cat_repository: &repository, clock: &clock, observability: &obs },
+    CreateCatInput { id: caller_uuid, name: "Whiskers".into() },
+).await?;
 ```
-src/
-├── domain/         # Types, entities, value objects. No I/O.
-├── use-cases/      # One file per use case. Pure functions taking deps as args.
-├── adapters/       # Infrastructure: interfaces + implementations.
-├── errors/         # Typed error classes.
-├── observability/  # Logger interface, implementations, tracer re-exports.
-├── testing/        # Exported test helpers (frame/testing subpath).
-└── index.ts        # Public API surface.
-```
+
+The caller owns migrations and shutdown. IDs are caller-provided; duplicate
+**names fail**, rather than returning the prior entity. Invalid UUIDs deliberately
+produce `InvalidCatNameError`, retaining the reference's historical naming.
 
 ## Observability
 
-Frame ships structured logging and distributed tracing via OpenTelemetry as first-class concerns. The design is **no-op by default**: without an OTel SDK registered, all tracing and logging operations silently do nothing. Zero overhead, zero crashes.
+Production crates use **only OpenTelemetry's API**, no SDK/provider/exporter
+setup. Without consumer configuration, `Observability::default()` and default
+`OtelLogger` are no-op safe. Consumers own resources, sampling, exporters, and
+provider lifetime. See `examples/src/bin/create_cat_with_otel.rs` for the complete
+wiring: a real SDK exporter prints finished spans, validates parent/child IDs,
+and flushes/shuts down.
 
-### How It Works
+Each use case has one `createCat` span and a `cat.created` success log. Each
+repository method has one `db.cats.<method>` span and **never logs**. Attributes
+contain IDs and normalized **UTF-16 name lengths**, not raw names. Error events
+carry the error message, just as in TS (duplicate error messages contain the
+name; do not mistake attribute discipline for complete PII redaction).
 
-- **Use cases** receive an `Observability` object (Logger + Tracer) via deps. Each use case wraps in a span and logs meaningful business events.
-- **Adapters** use `trace.getTracer('frame')` at module level. Span nesting (e.g., `createCat` → `db.cats.save`) happens automatically via OTel's AsyncLocalStorage-backed context propagation.
-- **Logger** has three implementations: `ConsoleLogger` (dev/examples), `NoopLogger` (tests), and `OtelLogger` (production — forwards to OTel Logs API with automatic trace correlation).
+`FutureExt::with_context` attaches context **per future poll**, so parent/child
+relationships and automatic log correlation survive `.await` without leaking
+thread-local guards between tasks. Adapters resolve the global API tracer on
+each operation; their trait and constructors have no observability parameter.
 
-### Wiring Up OTel (Consumer's Responsibility)
+Rust has no global Logs API provider. Construct `OtelLogger::new(provider.logger(
+"your-scope"))` using the **API trait** `opentelemetry::logs::LoggerProvider`;
+only the consumer knows the SDK type. `OtelLogger::default()` uses the API no-op
+provider. `ConsoleLogger` writes INFO/DEBUG to stdout and WARN/ERROR to stderr.
 
-Frame deliberately does NOT provide a `setupObservability()` helper. Consumers own SDK configuration — sampling, exporter choice, and resource attributes are your decisions, not Frame's.
-
-Install the OTel SDK packages (listed as optional peer dependencies):
-
-```bash
-pnpm add @opentelemetry/sdk-trace-base @opentelemetry/sdk-trace-node
-```
-
-See [`examples/create-cat.with-otel.ts`](examples/create-cat.with-otel.ts) for the complete, copy-pasteable setup:
-
-```typescript
-import { trace } from '@opentelemetry/api';
-import { ConsoleSpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
-
-const provider = new NodeTracerProvider({
-  spanProcessors: [new SimpleSpanProcessor(new ConsoleSpanExporter())],
-});
-provider.register(); // Sets global provider + enables AsyncLocalStorage context propagation
-
-// Now all Frame spans are live — createCat, db.cats.save, etc.
-```
-
-For production, replace `ConsoleSpanExporter` with your backend's exporter:
-- **OTLP (Jaeger, Grafana Tempo):** `@opentelemetry/exporter-trace-otlp-http`
-- **Honeycomb:** `@honeycombio/opentelemetry-node`
-- **Datadog:** `dd-trace` with OTel compatibility
-
-Consumers may additionally install `@opentelemetry/instrumentation-pg` for automatic query-level Postgres tracing. Frame's manual spans remain valuable for use-case-level and repository-level visibility.
-
-### Testing Spans
-
-Frame exports `createTestObservability()` under the `frame/testing` subpath for consumers to assert on span emission:
-
-```typescript
-import { createTestObservability } from 'frame/testing';
-
-const { observability, getSpans, reset, shutdown } = createTestObservability();
-
-// ... run your use case ...
-const spans = getSpans();
-expect(spans.find(s => s.name === 'myUseCase')).toBeDefined();
-```
-
-### Instrumentation Rules
-
-- **Instrument:** use case entry points, adapter I/O methods (DB, HTTP, external services).
-- **Do NOT instrument:** Zod validation, domain pure functions, value object construction.
-- **PII discipline:** span attributes capture shapes (`cat.name.length`), not raw values.
-- **Adapters emit spans only** — they do not log. Logs come from use cases for meaningful business events.
-
-### Architectural Rules (enforced by dependency-cruiser)
-
-1. **`domain/` cannot import from anywhere except other `domain/` files.** The domain layer is pure — no infrastructure, no I/O.
-2. **`use-cases/` can import from `domain/` and adapter interfaces**, but never from concrete adapter implementations.
-3. **Nothing internal imports from `index.ts`.** The barrel is for consumers only.
-4. **No OTel SDK imports in production code.** `src/` (except `src/testing/`) only uses the OTel API. The SDK is for tests, examples, and consumer setup.
-5. **No circular dependencies, anywhere.**
-
-Violations are caught by `pnpm depcruise` and blocked by the pre-push hook.
-
-### Folder Layout Rules (enforced by eslint-plugin-project-structure)
-
-The import-graph rules above are paired with a structural gate on file and folder layout. ESLint is wired in *solely* to host `eslint-plugin-project-structure` — Biome remains the lint + format authority. Run `pnpm lint:structure` to check, or `pnpm check` to run it as part of the full quality gate.
-
-The rules live in `folder-structure.mjs` and enforce:
-
-- **`src/domain/`, `src/use-cases/`, `src/observability/`, `src/testing/`** — flat folders of kebab-case `*.ts` files. No nested subdirectories.
-- **`src/adapters/`** — `<port>.ts` (the interface) and `<port>.<impl>.ts` (concrete adapters, e.g. `cat-repository.postgres.ts`).
-- **`src/errors/`** — `<entity>-<thing>.error.ts` plus the `index.ts` barrel.
-- **`tests/{unit,integration}/`** — `*.test.ts` and `*.<flavor>.test.ts` (e.g. `cat-repository.memory.test.ts`).
-- **`tests/helpers/`** — flat kebab-case `*.ts`, optionally with a single dotted qualifier (`cat-repository.conformance.ts`).
-- **`examples/`** — three accepted forms: `<use-case>.ts`, `<use-case>.with-<integration>.ts`, `<use-case>.<flavor>.ts` (e.g. `create-cat.hono.ts`).
-- **`migrations/`** — `<YYYYMMDD>_<NNN>_<snake_name>.ts`.
-- **`scripts/`** — flat kebab-case `*.ts`/`*.js`.
-
-To allow a new file shape, extend the structure tree in `folder-structure.mjs`. To make a one-off exception, add it to `ignorePatterns` at the bottom of the same file.
+`frame_testing::TestObservability` is a separate crate exposing `observability`,
+`get_spans`, `reset`, and `shutdown`. It uses a real SDK/in-memory exporter and
+serializes tests that alter the process-global tracer provider. Drop shuts down
+and resets that provider. It is a test helper, not a production setup helper.
 
 ## Examples
 
-The `examples/` directory holds runnable demonstrations of Frame's patterns. Each example is fully self-contained — Testcontainers spins up Postgres on demand — and is executed as part of `pnpm check`.
+All three are self-contained, create real Postgres, assert their results, and
+are run by `cargo xtask check`:
 
-| File | What it shows |
-|------|--------------|
-| `examples/create-cat.ts` | Bare SDK usage — wire up `CatRepositoryPostgres`, call `createCat`, fetch + delete |
-| `examples/create-cat.with-otel.ts` | Same flow with the full OTel SDK registered. Spans printed via `ConsoleSpanExporter` |
-| `examples/create-cat.hono.ts` | Use case exposed as an HTTP API via [Hono](https://hono.dev). Demonstrates how a transport adapter stays a thin shell — parse → invoke use case → translate domain errors to HTTP status codes (201 / 200 / 409 / 400) |
-
-The Hono example is the template for any transport layer (Hono, Express, Fastify, tRPC). Frame stays transport-agnostic: the use case takes `(deps, input)`, returns a domain entity, and throws typed domain errors. The route handler is the only place HTTP exists.
-
-## How to Add a New Use Case
-
-Step-by-step recipe:
-
-### 1. Define the domain types
-
-Create or extend files in `src/domain/`:
-
-```typescript
-// src/domain/dog.ts
-import { z } from 'zod/v4';
-
-export const DogNameSchema = z.string().trim().min(1).max(100);
-export type DogName = string;
-
-export interface Dog {
-  readonly id: string;
-  readonly name: DogName;
-  readonly breed: string;
-  readonly createdAt: Date;
-}
+```sh
+cargo run -p frame-examples --bin create_cat
+cargo run -p frame-examples --bin create_cat_with_otel
+cargo run -p frame-examples --bin create_cat_axum
 ```
 
-### 2. Define the repository interface
+The Axum demo starts an ephemeral listener, performs real POST/GET requests
+(201/200/409/400), then stops. It also implements missing-cat GET → 404.
+There are no extra business routes or use cases. This is a demo executable,
+**not a production daemon**; its release size includes testcontainer orchestration.
 
-```typescript
-// src/adapters/dog-repository.ts
-import type { Dog } from '../domain/dog.js';
+## Tests and coverage
 
-export interface DogRepository {
-  save(dog: Dog): Promise<void>;
-  findById(id: string): Promise<Dog | undefined>;
-}
-```
+The 72 original TS test scenarios are preserved, with shared/grouped Rust
+fixtures described in PARITY.md. They include real Postgres uniqueness races,
+migration up/down, clock injection, all validation errors, SDK spans/logs, and
+proptest's 50/100/100 cases. Unit schemas explicitly pin ECMAScript trim and
+UTF-16 limits rather than subtly changing Unicode behavior to Rust defaults.
 
-### 3. Implement the adapters
+`cargo xtask coverage` uses stable LLVM source coverage and enforces **each** of
+`crates/domain/src/cat.rs` and `crates/use-cases/src/create_cat.rs`:
 
-- `src/adapters/dog-repository.memory.ts` — for tests
-- `src/adapters/dog-repository.postgres.ts` — for production
+- lines ≥90%; functions ≥90%; **regions ≥85%**.
 
-### 4. Write the use case
+Region coverage is **not numerically equivalent** to TS's ≥85% branch coverage.
+Stable rustc does not expose branch instrumentation. This is an explicit,
+reviewer-approved substitution, not a claim of identical coverage metrics.
+All workspace tests run without skips/filters. Reports and test output are in
+`target/coverage/`; no extra core-code exclusions are used.
 
-```typescript
-// src/use-cases/create-dog.ts
-import type { Dog } from '../domain/dog.js';
-import type { DogRepository } from '../adapters/dog-repository.js';
+## Add a use case / fork the template
 
-export interface CreateDogDeps {
-  readonly dogRepository: DogRepository;
-  readonly clock: () => Date;
-  readonly observability: Observability;
-}
+1. Describe behavior, write red specs, and obtain the human test gate first
+   ([workflow](.claude/workflow.md)).
+2. Define pure types/validators in `crates/domain/src/<entity>.rs`.
+3. Define its repository trait in `crates/port/`; add typed errors in `errors/`.
+4. Add memory and real adapters; both must run the same conformance scenarios.
+5. Write one plain function file in `use-cases/` with explicit deps. Validate at
+   its boundary, instrument its span, and log only business success.
+6. Add ordered up/down SQL, run `cargo xtask codegen`, commit `.sqlx/`.
+7. Export the contract/use case from `frame`; keep concrete adapters separate.
+8. Wire the real adapter in the example composition root and exercise it.
+9. Run `cargo xtask check`; review test diffs; never bypass hooks.
 
-export async function createDog(deps: CreateDogDeps, input: { id: string; name: string; breed: string }): Promise<Dog> {
-  const { dogRepository, clock, observability } = deps;
-  return observability.tracer.startActiveSpan('createDog', async (span) => {
-    // validate, create, persist — see createCat for the full pattern
-  });
-}
-```
-
-### 5. Add errors
-
-```typescript
-// src/errors/dog-already-exists.error.ts
-export class DogAlreadyExistsError extends Error {
-  public readonly code = 'DOG_ALREADY_EXISTS' as const;
-  constructor(public readonly name: string) {
-    super(`A dog named "${name}" already exists.`);
-  }
-}
-```
-
-### 6. Export from index.ts
-
-Add types, use case, and adapter interface to `src/index.ts`. Do **not** export concrete adapters from here.
-
-### 7. Add migration
-
-Create a new migration in `migrations/`, run `pnpm db:codegen`, and commit the updated generated types.
-
-### 8. Write tests
-
-- Unit tests in `tests/unit/`
-- Integration tests in `tests/integration/`
-- Property-based tests using fast-check
-
-### 9. Verify
-
-```bash
-pnpm check  # must be green
-```
-
-## How to Fork Frame for a New Project
-
-1. **Fork or clone** this repo
-2. **Rename** `frame` → your project name in `package.json`
-3. **Delete** everything in `src/domain/`, `src/use-cases/`, `src/adapters/` (except `database.ts` and the generated types), `src/errors/`, and `tests/`
-4. **Delete** `migrations/` contents and create your own
-5. **Update** `src/index.ts` to export your domain
-6. **Update** `tsup.config.ts` entry points
-7. **Run** `pnpm db:codegen` after creating your first migration
-8. **Replace** the Cat examples with your own in `examples/`
-9. **Run** `pnpm check` to verify everything is clean
+To fork, rename workspace packages, replace the Cat domain/port/use-case/adapters,
+tests and migrations, update architectural allowlists, regenerate SQLx metadata,
+and adapt all three examples. Keep the workflow, boundaries and gate.
 
 ## Stack
 
-| Concern | Tool |
-|---------|------|
-| Language | TypeScript (strict) |
-| Database | PostgreSQL 16 |
-| DB access | Kysely + kysely-codegen |
-| Migrations | Kysely built-in Migrator |
-| Validation | Zod (external boundaries only) |
-| Tracing | OpenTelemetry API (SDK in tests/examples only) |
-| Logging | OTel Logs API (ConsoleLogger for dev) |
-| Testing | Vitest + fast-check |
-| Lint/format | Biome |
-| Arch rules (imports) | dependency-cruiser |
-| Arch rules (layout) | ESLint + eslint-plugin-project-structure |
-| Git hooks | Husky + lint-staged |
-| Build | tsup (ESM + CJS) |
-| Package manager | pnpm |
+Rust stable · Cargo workspace · PostgreSQL 16 · SQLx compile-time macros/offline
+metadata · thiserror · OpenTelemetry API/SDK boundary · axum (examples only) ·
+testcontainers-rs · proptest · rustfmt · Clippy · syn/Cargo architecture checker ·
+LLVM region coverage · dependency-free Git hooks · optional just.
 
-## License
-
-MIT
+License: MIT (same as reference).

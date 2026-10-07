@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "examples", "xtask", "tests"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+
+[workspace.dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+opentelemetry = { version = "0.31", default-features = false, features = ["trace", "logs"] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "logs", "testing"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "chrono", "uuid", "macros", "migrate"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync"] }
+testcontainers = "0.27"
+async-trait = "0.1"
+frame-domain = { path = "crates/domain" }
+frame-errors = { path = "crates/errors" }
+frame-port = { path = "crates/port" }
+frame-observability = { path = "crates/observability" }
+frame-use-cases = { path = "crates/use-cases" }
+frame-memory = { path = "crates/memory" }
+frame-postgres = { path = "crates/postgres" }
+frame = { path = "crates/frame" }
+frame-testing = { path = "crates/testing" }

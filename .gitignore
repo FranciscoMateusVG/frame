@@ -1,10 +1,8 @@
-node_modules/
-dist/
+/target/
 coverage/
-*.tsbuildinfo
 .env
 .env.*
 !.env.example
 .DS_Store
-tmp/
-projectStructure.cache.json
+*.profraw
+*.profdata
