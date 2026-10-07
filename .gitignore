@@ -1,10 +1,15 @@
-node_modules/
-dist/
-coverage/
-*.tsbuildinfo
+# Mix / Elixir build artifacts
+/_build/
+/deps/
+/cover/
+/doc/
+erl_crash.dump
+*.ez
+frame-*.tar
+
+# Local env + scratch
 .env
 .env.*
 !.env.example
 .DS_Store
 tmp/
-projectStructure.cache.json
