@@ -11,7 +11,7 @@ defmodule Frame.Unit.OtelLoggerTest do
   with an in-memory log exporter that converts batches with the SDK's own
   OTLP record conversion. This is the only place Frame's tests touch the logs SDK.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   require OpenTelemetry.Tracer, as: Tracer
 
@@ -46,32 +46,34 @@ defmodule Frame.Unit.OtelLoggerTest do
     defp body(other), do: other
   end
 
-  setup_all do
+  setup do
     # --- Tracer SDK wiring (for the trace-correlation test) ---
     test_obs = TestObs.create_test_observability()
 
     # --- Logs SDK wiring (once per suite) ---
     {:ok, _} = Application.ensure_all_started(:opentelemetry_experimental)
     table = :ets.new(:otel_log_records, [:ordered_set, :public])
+    :ets.give_away(table, test_obs.owner, nil)
+    handler = :"frame_otel_test_#{System.unique_integer([:positive])}"
 
     :ok =
-      :logger.add_handler(:frame_otel_test, :otel_log_handler, %{
+      :logger.add_handler(handler, :otel_log_handler, %{
+        filters: [only_owner: {&__MODULE__.only_owner/2, self()}],
         exporter: {InMemoryLogExporter, table},
         scheduled_delay_ms: 5
       })
 
     on_exit(fn ->
-      :logger.remove_handler(:frame_otel_test)
+      :logger.remove_handler(handler)
       TestObs.shutdown(test_obs)
     end)
 
     %{table: table, logger: OtelLogger.new("frame-test")}
   end
 
-  setup %{table: table} do
-    :ets.delete_all_objects(table)
-    :ok
-  end
+  @doc false
+  def only_owner(%{meta: %{pid: pid}} = event, pid), do: event
+  def only_owner(_event, _pid), do: :stop
 
   # The handler exports in batches; wait until the expected records arrive.
   defp finished_log_records(table, expected, deadline \\ 2_000) do

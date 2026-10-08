@@ -1,21 +1,14 @@
 defmodule Frame.Integration.MigrationTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Frame.Adapters.Database
   alias Frame.Test.TestDb
 
   @moduletag timeout: 120_000
 
-  setup_all do
-    {container, uri} = TestDb.start_postgres_container()
-    db = Database.create_database(uri)
-
-    on_exit(fn ->
-      Database.destroy(db)
-      TestDb.stop_container(container)
-    end)
-
-    %{db: db}
+  setup do
+    test_db = TestDb.isolated_database(migrate: false)
+    %{db: test_db.db}
   end
 
   defp table_names(db) do

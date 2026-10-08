@@ -3,3 +3,5 @@ ExUnit.start(capture_log: true)
 
 # Ecto.Migrator loads the same migration file once per test database.
 Code.put_compiler_option(:ignore_module_conflict, true)
+
+Frame.Test.TestDb.start_suite()

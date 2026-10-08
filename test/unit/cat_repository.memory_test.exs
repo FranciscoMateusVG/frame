@@ -1,11 +1,10 @@
 defmodule Frame.Unit.CatRepositoryMemoryTest do
-  # async: false — span assertions share the VM-wide SDK exporter.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Frame.Adapters.CatRepository.Memory
   alias Frame.Test.Observability, as: TestObs
 
-  setup_all do
+  setup do
     test_obs = TestObs.create_test_observability()
     on_exit(fn -> TestObs.shutdown(test_obs) end)
     %{test_obs: test_obs}

@@ -1,6 +1,5 @@
 defmodule Frame.Unit.CatPropertyTest do
-  # async: false — the adapter's spans go to the global SDK when one is running.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
   use ExUnitProperties
 
   alias Frame.Adapters.CatRepository

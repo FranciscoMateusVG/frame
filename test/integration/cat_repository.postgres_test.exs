@@ -7,10 +7,10 @@ defmodule Frame.Integration.CatRepositoryPostgresTest do
   file adds Postgres-specific tests: concurrency behavior under real database
   constraints.
 
-  Test isolation: each test truncates the cats table, so any test can run in
-  isolation and in any order. Testcontainers provides a fresh DB per module.
+  Conformance tests use SQL Sandbox transactions. The connection-race test
+  uses its own database on the same container, preserving independent connections.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Frame.Adapters.CatRepository
   alias Frame.Adapters.CatRepository.Postgres
@@ -20,12 +20,15 @@ defmodule Frame.Integration.CatRepositoryPostgresTest do
 
   @moduletag timeout: 120_000
 
-  setup_all do
+  setup context do
     test_obs = TestObs.create_test_observability()
-    test_db = TestDb.create_test_database()
+
+    test_db =
+      if context[:independent_connections],
+        do: TestDb.isolated_database(),
+        else: TestDb.checkout()
 
     on_exit(fn ->
-      TestDb.teardown(test_db)
       TestObs.shutdown(test_obs)
     end)
 
@@ -38,14 +41,12 @@ defmodule Frame.Integration.CatRepositoryPostgresTest do
   use Frame.Test.CatRepositoryConformance,
     name: "Postgres",
     factory: fn context -> Postgres.new(context.test_db.db) end,
-    # Truncate between tests for full isolation.
-    reset_state: fn context -> TestDb.truncate_cats(context.test_db) end,
     expected_db_system: "postgresql"
 
   # Postgres-specific tests — behavior that only matters with a real database.
   describe "CatRepository.Postgres — Postgres-specific" do
+    @describetag :independent_connections
     setup %{test_db: test_db, test_obs: test_obs} do
-      TestDb.truncate_cats(test_db)
       TestObs.reset(test_obs)
       %{repo: Postgres.new(test_db.db)}
     end

@@ -6,13 +6,13 @@ defmodule Frame.Integration.CreateCatTest do
   real Postgres database via Testcontainers. Named as specs — what the use
   case does, not how it's implemented.
 
-  Test isolation: each test truncates the cats table. Testcontainers provides
-  a fresh DB per module. Any test can run independently in any order.
+  Test isolation: each test owns a SQL Sandbox transaction on the shared
+  Testcontainers database. Tests run concurrently without sharing rows.
 
   Also covers span emission: parent-child relationships and error-path span
   recording.
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Frame.Adapters.CatRepository
   alias Frame.Adapters.CatRepository.Postgres
@@ -27,12 +27,11 @@ defmodule Frame.Integration.CreateCatTest do
   # Fixed clock for deterministic timestamps in tests.
   @fixed_date ~U[2026-01-15 12:00:00.000000Z]
 
-  setup_all do
+  setup do
     test_obs = TestObs.create_test_observability()
-    test_db = TestDb.create_test_database()
+    test_db = TestDb.checkout()
 
     on_exit(fn ->
-      TestDb.teardown(test_db)
       TestObs.shutdown(test_obs)
     end)
 
@@ -40,8 +39,6 @@ defmodule Frame.Integration.CreateCatTest do
   end
 
   setup %{test_db: test_db, test_obs: test_obs} do
-    # Truncate between tests for full isolation.
-    TestDb.truncate_cats(test_db)
     TestObs.reset(test_obs)
 
     # Shared deps builder — DRY across all tests.
