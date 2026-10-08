@@ -12,6 +12,20 @@ defmodule Frame.Web.HealthController do
   alias Frame.Web.Deps
   alias Frame.Web.Reply
 
+  # Evaluated when compiling the release, not from the running container env.
+  @revision (case System.get_env("BUILD_SHA") do
+               nil -> "unknown"
+               "" -> "unknown"
+               revision -> revision
+             end)
+
+  @doc false
+  def version(conn, _params) do
+    conn
+    |> put_resp_header("cache-control", "no-store")
+    |> Reply.json(200, %{revision: @revision})
+  end
+
   @doc false
   def live(conn, _params), do: conn |> put_resp_content_type("text/plain") |> send_resp(200, "ok")
 

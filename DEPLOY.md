@@ -70,3 +70,19 @@ printf %s "$token" | sha256sum   # → PRINT_SERVICE_CREDENTIALS[].sha256 on Hon
   `/readyz` goes red.
 - Sessions are lost on any restart. That is expected; the supplier just
   signs in again.
+
+## Build revision
+
+`GET /version` is public and returns only `{"revision":"<sha>"}` with
+`Content-Type: application/json` and `Cache-Control: no-store`. It is compiled
+into the artifact: setting `BUILD_SHA` on the running container cannot change it.
+
+CI builds with `docker build --build-arg BUILD_SHA="$GITHUB_SHA" ...`. For Dokploy
+public clones without that argument, the build reads only `.git/HEAD`,
+`.git/refs/**`, and `.git/packed-refs` from a read-only, filtered build context.
+Git config, objects, logs, and credentials are excluded; Git metadata never enters
+the runtime image. A worktree `.git` pointer is not followed (pass the argument).
+An explicit argument conflicting with valid checkout metadata fails the build.
+Missing metadata/argument yields `unknown` for local development; malformed Git
+metadata fails closed. Staging smoke must require an exact full 40-hex SHA match
+and reject `unknown`. This proves the source revision, not the runtime image ID.

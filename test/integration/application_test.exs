@@ -54,6 +54,14 @@ defmodule Frame.Integration.ApplicationTest do
       Finch.build(:get, "http://127.0.0.1:#{port}" <> path) |> Finch.request(AppTestClient)
     end
 
+    assert {:ok, %{status: 200, headers: version_headers, body: version_body}} = get.("/version")
+    assert JSON.decode!(version_body) == %{"revision" => "unknown"}
+    assert {"cache-control", "no-store"} in version_headers
+
+    assert Enum.any?(version_headers, fn {key, value} ->
+             key == "content-type" and String.starts_with?(value, "application/json")
+           end)
+
     assert {:ok, %{status: 200}} = get.("/healthz")
     assert {:ok, %{status: 200, body: ~s({"ready":true})}} = get.("/readyz")
     assert {:ok, %{status: 302}} = get.("/orders")

@@ -38,6 +38,7 @@ defmodule Frame.Web.Router do
   end
 
   scope "/", Frame.Web do
+    get "/version", HealthController, :version
     get "/healthz", HealthController, :live
     get "/readyz", HealthController, :ready
   end
