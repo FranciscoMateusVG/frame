@@ -7,7 +7,6 @@ from pathlib import Path
 import tempfile
 import unittest
 import pipeline
-from staging import Inputs
 
 
 class TimingTests(unittest.TestCase):
@@ -39,9 +38,6 @@ class TimingTests(unittest.TestCase):
             ).strip()
             self.assertEqual(output, tmp)
 
-    def test_csrf_is_parsed_without_logging_the_page(self):
-        self.assertEqual(Inputs('<input name="_csrf" value="a&amp;b">').csrf, "a&b")
-        self.assertIsNone(Inputs('<input name="password" value="synthetic">').csrf)
 
 
 if __name__ == "__main__":

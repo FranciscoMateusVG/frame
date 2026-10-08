@@ -1,5 +1,4 @@
 """Scoped webhook and HTTP smoke. Secrets only live in this process's memory."""
-import html.parser
 import http.cookiejar
 import json
 import os
@@ -113,55 +112,69 @@ def deploy(ctx, origin):
     raise RuntimeError("readiness timeout")
 
 
-class Inputs(html.parser.HTMLParser):
-    def __init__(self, text):
-        super().__init__()
-        self.csrf = None
-        self.feed(text)
-
-    def handle_starttag(self, tag, pairs):
-        attrs = dict(pairs)
-        if tag == "input" and attrs.get("name") == "_csrf":
-            self.csrf = attrs.get("value")
-
-
-def smoke(ctx, origin):
-    read = secret_reader()
-    password = read("PRINT_PORTAL_PASSWORD_" + ctx["variant"].upper())
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+def portal_smoke(ctx, origin, password, result=None):
+    result = result if result is not None else {"started_at": now(), "status": "running"}
+    result["authentication_transport"] = "json_session_api"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
         urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    result = {"started_at": now(), "status": "running", "oidc_scope_denial_proven": True}
-    save("smoke", result)
-    def get(path):
-        with opener.open(origin + path, timeout=20) as response:
-            assert response.status == 200 and urllib.parse.urlsplit(response.geturl()).netloc == urllib.parse.urlsplit(origin).netloc
-            return response.read().decode()
-    def form(path, values):
-        req = urllib.request.Request(origin + path, data=urllib.parse.urlencode(values).encode(),
-            headers={"Origin": origin, "Content-Type": "application/x-www-form-urlencoded"})
+
+    def request(path, method="GET", body=None, csrf=None, expected=200, as_json=False):
+        headers = {"Origin": origin}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        if csrf is not None:
+            headers["X-CSRF-Token"] = csrf
+        req = urllib.request.Request(origin + path, method=method,
+            data=None if body is None else json.dumps(body).encode(), headers=headers)
         with opener.open(req, timeout=20) as response:
-            assert urllib.parse.urlsplit(response.geturl()).netloc == urllib.parse.urlsplit(origin).netloc
-            return response.status, urllib.parse.urlsplit(response.geturl()).path, response.read().decode()
-    assert json.loads(get("/version")) == {"revision": ctx["source_sha"]}
-    get("/healthz")
-    csrf = Inputs(get("/login")).csrf
-    assert csrf
-    status, path, page = form("/login", {"password": password, "_csrf": csrf})
-    assert status == 200 and path == "/orders"
+            assert response.status == expected
+            assert response.geturl() == origin + path
+            if as_json:
+                assert response.headers.get_content_type() == "application/json"
+                return json.load(response)
+            return response.read().decode()
+
+    result["checkpoint"] = "public_endpoints"
+    assert request("/version", as_json=True) == {"revision": ctx["source_sha"]}
+    request("/healthz")
+    request("/login")
+    result["checkpoint"] = "pre_session"
+    pre = request("/api/session", as_json=True)
+    assert pre["authenticated"] is False and pre["csrfToken"]
+    result["checkpoint"] = "login"
+    session = request("/api/session", method="POST", body={"password": password},
+        csrf=pre["csrfToken"], as_json=True)
+    assert session["authenticated"] is True and session["csrfToken"]
     try:
-        data = json.loads(get("/api/print/v1/orders"))
+        result["checkpoint"] = "orders"
+        page = request("/orders")
+        data = request("/api/print/v1/orders", as_json=True)
         fixture_ids = ["6b8337b0-4dbc-4c1f-8644-9691aa494c21"]
         assert sorted(item["id"] for item in data["items"]) == fixture_ids and data["nextCursor"] is None
         assert all("/orders/" + order_id in page for order_id in fixture_ids)
         result.update(health=200, login=200, orders_html=200, orders_api=200, fixture_match=True)
     finally:
-        csrf = Inputs(page).csrf
-        assert csrf
-        status, path, _ = form("/logout", {"_csrf": csrf})
-        assert status in (200, 204) and (path == "/login" or status == 204)
-    result.update(status="success", completed_at=now(), logout=True,
+        result["logout_attempted"] = True
+        request("/api/session", method="DELETE", csrf=session["csrfToken"], expected=204)
+        result["logout"] = True
+    result.update(status="success", completed_at=now(), checkpoint="complete",
         visually_verified=False, phoenix_ws="separate_acceptance_probe" if ctx["variant"] == "phoenix" else "not_applicable")
+    return result
+
+
+def smoke(ctx, origin):
+    result = {"started_at": now(), "status": "running", "checkpoint": "secret_reader"}
     save("smoke", result)
+    try:
+        read = secret_reader()
+        result["oidc_scope_denial_proven"] = True
+        password = read("PRINT_PORTAL_PASSWORD_" + ctx["variant"].upper())
+        portal_smoke(ctx, origin, password, result)
+    except Exception as error:
+        result.update(status="failure", failed_at=now(), error_type=type(error).__name__)
+        raise
+    finally:
+        save("smoke", result)
 
 
 if __name__ == "__main__":
