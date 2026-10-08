@@ -1,0 +1,22 @@
+services:
+  print-portal-elixir:
+    build: .
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      PORT: "4000"
+      PRINT_PORTAL_ORIGIN: ${PRINT_PORTAL_ORIGIN:?Set the public portal origin}
+      PRINT_PORTAL_PASSWORD: ${PRINT_PORTAL_PASSWORD:?Set the portal password}
+      INCLUIR_PRINT_SERVICE_TOKEN: ${INCLUIR_PRINT_SERVICE_TOKEN:?Set the service token}
+      # Use the unique Incluir container hostname, not the shared hono-app alias.
+      INCLUIR_PRINT_API_ORIGIN: ${INCLUIR_PRINT_API_ORIGIN:?Set the internal Hono origin}
+      PRINT_PORTAL_TRUSTED_PROXIES: ${PRINT_PORTAL_TRUSTED_PROXIES:?Set the Traefik network CIDR}
+    networks:
+      - incluir-internal
+    # Dokploy injects its routing network and Traefik labels. No host ports.
+    # Keep one replica: sessions and login rate limits are in memory.
+
+networks:
+  incluir-internal:
+    external: true
+    name: compose-override-solid-state-port-349ude_app-network
