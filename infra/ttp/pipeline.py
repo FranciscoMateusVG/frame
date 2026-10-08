@@ -13,7 +13,7 @@ import urllib.request
 
 STAGES = ["install", "lint-format", "typecheck-compile", "tests", "image-build",
           "staging-deploy", "staging-smoke"]
-STATE = Path(".ttp")
+STATE = Path(os.environ.get("TTP_STATE_DIR", ".ttp"))
 RUST = str(Path.home() / ".cargo/bin/cargo")
 PACKAGES = " ".join("-p frame-portal-" + name for name in
                     ["domain", "port", "use-cases", "memory", "hono", "web"])
@@ -44,7 +44,7 @@ def now():
 
 
 def save(name, value):
-    STATE.mkdir(exist_ok=True)
+    STATE.mkdir(parents=True, exist_ok=True)
     target = STATE / (name + ".json")
     tmp = target.with_suffix(".tmp")
     tmp.write_text(json.dumps(value, indent=2) + "\n")

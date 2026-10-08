@@ -92,7 +92,8 @@ docker build --platform linux/arm64 -f infra/ttp/Dockerfile.fake -t frame-ttp-fa
 
 ## Evidence and honest limits
 
-`.ttp/ttp-timings.json` is always uploaded if the runner remains alive. It includes
+`$TTP_STATE_DIR/ttp-timings.json` (per-run runner temporary directory, outside
+the source checkout so generated data cannot pollute lint) is always uploaded if the runner remains alive. It includes
 stage timestamps/durations/statuses, admission waits, contention, actual source
 SHA/toolchains, local image ID, fake SHA/hash, webhook acceptance, first observed
 healthy revision, and authenticated smoke completion. GitHub run/job metadata
