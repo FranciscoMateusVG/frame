@@ -8,9 +8,9 @@ defmodule Frame.Http.Api do
       and `X-CSRF-Token`; `If-Match` and `Idempotency-Key` are relayed for
       the upstream to enforce.
 
-  The browser's `Authorization` and cookies are never forwarded; the
-  upstream path is rebuilt from validated ids only (no proxying of
-  arbitrary paths or hosts).
+  A browser `Authorization` header is refused (400); cookies are never
+  forwarded; the upstream path is rebuilt from validated ids only (no
+  proxying of arbitrary paths or hosts).
   """
 
   import Plug.Conn
@@ -29,9 +29,18 @@ defmodule Frame.Http.Api do
 
   @doc "Dispatches `/api/...` (path segments after `api`)."
   @spec call(Plug.Conn.t(), map(), [String.t()]) :: Plug.Conn.t()
-  def call(conn, deps, ["session"]), do: session(conn, deps, conn.method)
-  def call(conn, deps, ["print", "v1" | rest]), do: print(conn, deps, rest)
-  def call(conn, _deps, _path), do: Reply.error(conn, :not_found)
+  def call(conn, deps, path) do
+    # The browser authenticates only with the session cookie. A request that
+    # carries credentials in Authorization (e.g. a leaked service token) is
+    # refused outright — never ignored, never relayed (spec §4.5).
+    if get_req_header(conn, "authorization") == [],
+      do: dispatch(conn, deps, path),
+      else: Reply.error(conn, :invalid_request)
+  end
+
+  defp dispatch(conn, deps, ["session"]), do: session(conn, deps, conn.method)
+  defp dispatch(conn, deps, ["print", "v1" | rest]), do: print(conn, deps, rest)
+  defp dispatch(conn, _deps, _path), do: Reply.error(conn, :not_found)
 
   # --- /api/session ---
 

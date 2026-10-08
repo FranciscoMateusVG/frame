@@ -401,14 +401,25 @@ defmodule Frame.Integration.PortalApiTest do
       assert {r.status, code(r)} == {400, "INVALID_REQUEST"}
       {_p, r} = Portal.command(p, :post, path, json: %{revision: 1})
       assert {r.status, code(r)} == {428, "PRECONDITION_REQUIRED"}
-      # The browser's Authorization header is never relayed.
-      {_p, _r} =
+      # A browser never sends credentials in Authorization: refused, not relayed.
+      count = FakeHono.request_count(p.hono)
+
+      {_p, r} =
         Portal.command(p, :post, path,
           json: %{revision: 1},
-          headers: [{"authorization", "Bearer browser"} | pre]
+          headers: [{"authorization", "Bearer " <> p.hono.token} | pre]
         )
 
-      assert {"authorization", "Bearer " <> p.hono.token} in FakeHono.last_headers(p.hono)
+      assert {r.status, code(r)} == {400, "INVALID_REQUEST"}
+
+      for path <- ["/api/print/v1/orders", "/api/session"] do
+        {_p, r} = Portal.get(p, path, headers: [{"authorization", "Bearer x"}])
+        assert {r.status, code(r)} == {400, "INVALID_REQUEST"}, path
+      end
+
+      assert FakeHono.request_count(p.hono) == count
+      {_p, ok} = Portal.command(p, :post, path, json: %{revision: 1}, headers: pre)
+      assert ok.status == 200
       refute Enum.any?(FakeHono.last_headers(p.hono), fn {k, _} -> k == "cookie" end)
     end
 
