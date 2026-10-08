@@ -330,9 +330,32 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
+/** Largest JSON answer accepted from upstream (a full order is far below this). */
+const MAX_JSON_BYTES = 2 * 1024 * 1024;
+
+/** Read and parse a JSON body, refusing more than MAX_JSON_BYTES without buffering it. */
 async function readJson(res: Response): Promise<unknown> {
+  const declared = Number(res.headers.get('content-length') ?? '0');
+  if (declared > MAX_JSON_BYTES || !res.body) {
+    await discard(res);
+    if (declared > MAX_JSON_BYTES) throw new UpstreamUnavailableError('response too large');
+    return undefined;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_JSON_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new UpstreamUnavailableError('response too large');
+    }
+    chunks.push(value);
+  }
   try {
-    return await res.json();
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } catch {
     return undefined;
   }

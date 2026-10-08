@@ -85,6 +85,11 @@ describe('PrintApiHttp — failure modes map to UpstreamUnavailableError', () =>
     await unavailable(api.listOrders({ limit: 1 }));
   });
 
+  it('an oversized JSON answer is refused without buffering it all', async () => {
+    upstream.behaviour.hugeBodyBytes = 3 * 1024 * 1024;
+    await unavailable(api.listOrders({ limit: 1 }));
+  });
+
   it('a refused service token (401) is unavailability, not a login problem', async () => {
     const wrong = new PrintApiHttp({ origin: upstream.origin, token: `x${upstream.token}` });
     await unavailable(wrong.listOrders({ limit: 1 }));

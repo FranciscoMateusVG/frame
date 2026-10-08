@@ -125,6 +125,61 @@ describe('portal process (src/http/server.ts)', () => {
     }
   }, 30_000);
 
+  it('caps non-upload request bodies before buffering (Content-Length and chunked)', async () => {
+    const running = await start(env());
+    try {
+      const go = browser(running.base);
+      const { csrfToken } = (await (await go('/api/session')).json()) as { csrfToken: string };
+      const big = JSON.stringify({ password: 'x'.repeat(2 * 1024 * 1024) });
+
+      const declared = await go('/api/session', {
+        method: 'POST',
+        csrf: csrfToken,
+        headers: { 'Content-Type': 'application/json' },
+        body: big,
+      });
+      expect(declared.status).toBe(413);
+      expect(((await declared.json()) as { error: { code: string } }).error.code).toBe(
+        'PAYLOAD_TOO_LARGE',
+      );
+
+      // Chunked (no Content-Length): a stream body forces Transfer-Encoding.
+      const chunks = new TextEncoder().encode(big);
+      const chunked = await go('/api/session', {
+        method: 'POST',
+        csrf: csrfToken,
+        headers: { 'Content-Type': 'application/json' },
+        body: new ReadableStream({
+          start(controller) {
+            for (let i = 0; i < chunks.length; i += 65536)
+              controller.enqueue(chunks.slice(i, i + 65536));
+            controller.close();
+          },
+        }),
+        duplex: 'half',
+      } as RequestInit);
+      expect(chunked.status).toBe(413);
+
+      const form = await go('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `_csrf=${csrfToken}&password=${'y'.repeat(2 * 1024 * 1024)}`,
+      });
+      expect(form.status).toBe(413);
+
+      // Normal-sized requests still work.
+      const ok = await go('/api/session', {
+        method: 'POST',
+        csrf: csrfToken,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: 'wrong-but-small-password' }),
+      });
+      expect(ok.status).toBe(401);
+    } finally {
+      await stop(running);
+    }
+  }, 30_000);
+
   it('relays an upstream 429 with its Retry-After through the real server', async () => {
     const running = await start(env());
     try {

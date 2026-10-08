@@ -27,6 +27,8 @@ export interface FakeUpstreamBehaviour {
   redirectTo?: string;
   /** Add an unexpected field to every JSON body (contract violation). */
   leakField?: boolean;
+  /** Answer every JSON request with a body of this many bytes. */
+  hugeBodyBytes?: number;
   /** Answer every request with 429 RATE_LIMITED and this Retry-After (seconds). */
   rateLimitedFor?: number;
 }
@@ -109,6 +111,22 @@ export async function startFakeUpstream(
     if (behaviour.delayMs) await new Promise((r) => setTimeout(r, behaviour.delayMs));
     if (behaviour.redirectTo) return c.redirect(behaviour.redirectTo, 302);
     if (behaviour.failWith) return c.text('upstream exploded', behaviour.failWith as 500);
+    if (behaviour.hugeBodyBytes) {
+      // Contract-valid but huge: only a size cap can refuse it.
+      const summary = {
+        id: randomUUID(),
+        reference: 'IMP-0001',
+        title: 'x'.repeat(behaviour.hugeBodyBytes),
+        revision: 1,
+        version: 1,
+        status: 'ready',
+        createdAt: new Date().toISOString(),
+        collectedAt: null,
+        printedAt: null,
+        approvedAmountCents: null,
+      };
+      return c.json({ items: [summary], nextCursor: null });
+    }
     if (behaviour.rateLimitedFor) {
       return c.json(
         {

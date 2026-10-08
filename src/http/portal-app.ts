@@ -5,11 +5,39 @@
  * composition and tests/helpers for the fake one).
  */
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { portalApiRoutes } from './portal-api-routes.js';
 import { PORTAL_CSS, PORTAL_JS } from './portal-assets.js';
 import { portalHtmlRoutes } from './portal-html-routes.js';
-import { errorToJson, jsonError, type PortalDeps, type PortalEnv } from './portal-http.js';
+import {
+  errorToJson,
+  jsonError,
+  type PortalContext,
+  type PortalDeps,
+  type PortalEnv,
+} from './portal-http.js';
 import { errorPage } from './portal-views.js';
+
+/** Every non-upload body (login, JSON commands, forms) is tiny. */
+const SMALL_BODY_MAX_BYTES = 64 * 1024;
+
+/** Upload routes carry their own 5 MiB + 512 KiB limit. */
+const UPLOAD_ROUTE =
+  /^\/(api\/print\/v1\/orders\/[^/]+\/quotes|api\/print\/v1\/monthly-closes\/[^/]+\/invoice|orders\/[^/]+\/quotes|invoices\/[^/]+)$/;
+
+const smallBodyLimit = bodyLimit({
+  maxSize: SMALL_BODY_MAX_BYTES,
+  onError: (c) => tooLarge(c as PortalContext),
+});
+
+function tooLarge(c: PortalContext): Response | Promise<Response> {
+  return c.req.path.startsWith('/api/')
+    ? jsonError(c, 413, 'PAYLOAD_TOO_LARGE', 'Requisição grande demais.')
+    : c.html(
+        errorPage('Requisição grande demais', { kind: 'error', text: 'Requisição grande demais.' }),
+        413,
+      );
+}
 
 const HTML_CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
@@ -42,6 +70,15 @@ export function createPortalApp(deps: PortalDeps): Hono<PortalEnv> {
       errorPage('Erro', { kind: 'error', text: 'Erro interno. Tente novamente.' }),
       500,
     );
+  });
+
+  // Cap request bodies BEFORE any handler buffers them (Content-Length or
+  // chunked); upload routes are capped by their own, larger limit.
+  app.use('*', async (c, next) => {
+    if (c.req.method === 'GET' || c.req.method === 'HEAD' || UPLOAD_ROUTE.test(c.req.path)) {
+      return next();
+    }
+    return smallBodyLimit(c, next);
   });
 
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
