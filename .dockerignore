@@ -1,0 +1,17 @@
+.git
+.husky
+.claude
+.env
+.env.*
+**/.env
+**/.env.*
+node_modules
+dist
+dist-portal
+coverage
+tmp
+*.md
+tests
+examples
+scripts
+docker

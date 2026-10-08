@@ -62,3 +62,48 @@ collected → quote → staff approval through the real human route → printed)
 the HTML-form journey, CSRF/Origin, 404 across suppliers, relayed 412/428/409
 and logout all passed. At that commit the monthly-close routes are not
 mounted upstream, so `/invoices` shows "Notas fiscais ainda indisponíveis".
+
+## Production container (2026-10-08)
+
+The multi-stage Dockerfile builds only the portal bundle with frozen pnpm
+10.33.0 dependencies. The runtime uses the official **node:24-bookworm-slim**
+image (Node 24 satisfies package.json's >=20 engines constraint), a root-owned
+bundle, and UID 10001. No application node_modules, source maps, TypeScript,
+compiler or build dependencies are copied into the runtime. The base image's
+normal Node/npm installation is retained, not hand-stripped.
+
+This matches Phoenix's Debian/glibc slim posture: non-root, exec-form entrypoint,
+HTTP /healthz HEALTHCHECK at 30s/5s timeout/20s grace/3 retries, and no Alpine,
+scratch, UPX, special minification or OS-library stripping. Build-only native
+tooling supports the existing dev dependencies and does not affect final size.
+The runtime layout follows the [official Node image](https://hub.docker.com/_/node)
+and [Docker multi-stage builds](https://docs.docker.com/build/building/multi-stage/).
+
+```bash
+docker build --platform linux/arm64 -t print-portal-ts .
+docker image inspect print-portal-ts --format '{{.Size}}'
+# Supply the four required variables through your protected environment first.
+docker run --rm -p 127.0.0.1:4000:4000 \
+  -e PRINT_PORTAL_PASSWORD -e INCLUIR_PRINT_SERVICE_TOKEN \
+  -e INCLUIR_PRINT_API_ORIGIN -e PRINT_PORTAL_ORIGIN print-portal-ts
+curl --fail http://127.0.0.1:4000/healthz
+```
+
+The image defaults to HOST=0.0.0.0 and PORT=4000 (the non-container entrypoint
+otherwise defaults to 3000). A PORT override also updates the health probe;
+update the published port accordingly. Secrets are runtime-only, never ARG/COPY.
+.dockerignore excludes .env files, dependencies and generated outputs.
+
+Measured locally with Docker 29.4.0 on **linux/arm64**: **249,405,608 bytes
+(237.85 MiB)** from docker image inspect .Size. This is the uncompressed logical
+image size, not compressed registry transfer, unique disk usage or runtime RAM.
+Resolved Node: v24.21.0; base manifest
+sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20.
+Node 24 is a moving security-patch tag: record the resolved digest when rerunning.
+Image ID: sha256:9ea296e0cb929fe2f4b5a4c13403b6f99f7c546f57ec99984641066a6bb30a4a.
+
+Real-container checks: /healthz and /login 200; Docker healthy; default and
+custom port 4010; UID 10001; no compiler or application node_modules; read-only
+root filesystem with all capabilities dropped; missing env exits 1. Synthetic
+runtime secrets were not present in logs. Health is liveness, not proof of an
+upstream Incluir connection. No production service or credentials were used.
