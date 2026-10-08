@@ -42,13 +42,19 @@ const origin = (name: string) =>
     }, `${name} must be a bare origin like https://host[:port]`)
     .transform((value) => new URL(value).origin);
 
-const seconds = (name: string, fallback: number) =>
+/**
+ * Session TTL override in seconds. The spec value is both the default and
+ * the MAXIMUM: an override may only shorten it (isolated test configs).
+ */
+const ttlSeconds = (name: string, specMax: number) =>
   z
     .string()
     .regex(/^[1-9][0-9]{0,6}$/, `${name} must be a positive integer (seconds)`)
-    .transform((value) => Number(value) * 1000)
+    .transform(Number)
+    .refine((value) => value <= specMax, `${name} may only shorten the session (max ${specMax})`)
+    .transform((value) => value * 1000)
     .optional()
-    .transform((value) => value ?? fallback * 1000);
+    .transform((value) => value ?? specMax * 1000);
 
 const EnvSchema = z.object({
   PRINT_PORTAL_PASSWORD: z
@@ -74,11 +80,11 @@ const EnvSchema = z.object({
     .transform((value) => value ?? 3000),
   HOST: z.string().min(1).optional(),
   PRINT_PORTAL_TRUSTED_PROXIES: z.string().optional(),
-  PRINT_PORTAL_SESSION_ABSOLUTE_SECONDS: seconds(
+  PRINT_PORTAL_SESSION_ABSOLUTE_SECONDS: ttlSeconds(
     'PRINT_PORTAL_SESSION_ABSOLUTE_SECONDS',
     8 * 60 * 60,
   ),
-  PRINT_PORTAL_SESSION_IDLE_SECONDS: seconds('PRINT_PORTAL_SESSION_IDLE_SECONDS', 30 * 60),
+  PRINT_PORTAL_SESSION_IDLE_SECONDS: ttlSeconds('PRINT_PORTAL_SESSION_IDLE_SECONDS', 30 * 60),
 });
 
 export class PortalConfigError extends Error {

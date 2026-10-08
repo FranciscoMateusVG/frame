@@ -32,6 +32,12 @@ describe('loadPortalConfig', () => {
     expect(config.port).toBe(4001);
     expect(config.trustedProxies).toEqual(['10.0.0.1', '10.0.0.2']);
     expect([config.sessionIdleTtlMs, config.sessionAbsoluteTtlMs]).toEqual([2000, 5000]);
+    const max = loadPortalConfig({
+      ...valid,
+      PRINT_PORTAL_SESSION_IDLE_SECONDS: '1800',
+      PRINT_PORTAL_SESSION_ABSOLUTE_SECONDS: '28800',
+    });
+    expect([max.sessionIdleTtlMs, max.sessionAbsoluteTtlMs]).toEqual([1_800_000, 28_800_000]);
   });
 
   it.each([
@@ -44,6 +50,8 @@ describe('loadPortalConfig', () => {
     ['portal origin not a URL', { PRINT_PORTAL_ORIGIN: 'grafica' }],
     ['ftp origin', { PRINT_PORTAL_ORIGIN: 'ftp://grafica.test' }],
     ['bad ttl', { PRINT_PORTAL_SESSION_IDLE_SECONDS: '0' }],
+    ['idle ttl longer than 30 min', { PRINT_PORTAL_SESSION_IDLE_SECONDS: '1801' }],
+    ['absolute ttl longer than 8 h', { PRINT_PORTAL_SESSION_ABSOLUTE_SECONDS: '28801' }],
     ['password equals token', { PRINT_PORTAL_PASSWORD: valid.INCLUIR_PRINT_SERVICE_TOKEN }],
   ])('refuses %s, naming the variable but never its value', (_name, patch) => {
     const env = { ...valid, ...patch };
