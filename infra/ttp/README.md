@@ -166,3 +166,21 @@ already inside staging-deploy, not an extra bucket. Image cleanup and final
 artifact publication happen after the TTP endpoint and are not added to it.
 Successful smoke with unavailable merge/jobs metadata fails the reporting gate,
 retaining incomplete evidence rather than calling it a valid measured sample.
+
+### Shared authentication smoke
+
+The three UIs do not share form field names or form routes. The smoke uses their
+common JSON session contract: GET /api/session, POST with exact Origin and the
+pre-session X-CSRF-Token, then DELETE with the rotated session CSRF token. It
+still checks /login 200 and authenticated /orders HTML plus the frozen orders API
+fixture. Redirects are rejected. No password, cookie, CSRF or response body is
+stored in evidence; failures record only a fixed checkpoint and exception type.
+
+`python3 infra/ttp/test_staging.py` is an opt-in real-staging HTTP regression.
+Its stdin JSON contains variant, revision and password; supply these directly
+from the native secret store in process memory, never a file, argv, log or shell
+history. It is not part of PR checks (those have no staging credentials). The
+normal push smoke exercises the same function plus real OIDC and denial probes.
+The old HTML-form smoke failed against Rust 861cac82; the JSON-session smoke
+passed against the same deployed artifact, and against TS 72282b78. No portal
+application code changed. Failed CI run 37815283038 remains in the dataset.
