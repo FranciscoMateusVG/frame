@@ -1,0 +1,21 @@
+# No public domain, host port, production network or production data.
+services:
+  ttp-fake:
+    build:
+      context: .
+      dockerfile: infra/ttp/Dockerfile.fake
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    deploy:
+      replicas: 1
+    environment:
+      INCLUIR_PRINT_SERVICE_TOKEN: ${INCLUIR_PRINT_SERVICE_TOKEN:?synthetic token required}
+    networks:
+      ttp-private:
+        aliases:
+          - ttp-fake
+networks:
+  ttp-private:
+    external: true
+    name: frame-ttp-private

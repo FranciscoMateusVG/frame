@@ -9,3 +9,7 @@ coverage/
 .DS_Store
 tmp/
 projectStructure.cache.json
+
+# TTP run artifacts
+.ttp/
+__pycache__/
