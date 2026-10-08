@@ -4,7 +4,7 @@
  * upstream over HTTP, and a restart invalidates every session (spec §5).
  */
 import { type ChildProcess, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { request } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -145,6 +145,50 @@ describe('portal process (src/http/server.ts)', () => {
   afterAll(async () => {
     await upstream.close();
   });
+
+  it('renders full general instructions and downloads every unpaired legacy file', async () => {
+    const order = seedTwoFileOrder(upstream.api);
+    const files = order.jobs.map((j) => j.file);
+    Object.assign(order, {
+      jobs: [],
+      generalInstructions: { text: 'Texto integral\n<script>alert(1)</script>', files },
+    });
+    const running = await start(env());
+    try {
+      const go = browser(running.base);
+      const pre = (await (await go('/api/session')).json()) as { csrfToken: string };
+      expect(
+        (
+          await go('/api/session', {
+            method: 'POST',
+            csrf: pre.csrfToken,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: PASSWORD }),
+          })
+        ).status,
+      ).toBe(200);
+      const response = await go(`/orders/${order.id}`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain('Instruções gerais');
+      expect(html).toContain('Texto integral');
+      expect(html).toContain('&lt;script&gt;');
+      expect(html).not.toContain('<script>alert(1)</script>');
+      expect(html).not.toContain('<strong>Cópias:</strong>');
+      for (const file of files) {
+        expect(html).toContain(file.name);
+        const download = await go(`/api/print/v1/orders/${order.id}/files/${file.id}`);
+        expect(download.status).toBe(200);
+        expect(
+          createHash('sha256')
+            .update(Buffer.from(await download.arrayBuffer()))
+            .digest('hex'),
+        ).toBe(file.sha256);
+      }
+    } finally {
+      await stop(running);
+    }
+  }, 20_000);
 
   it('refuses to start without configuration, naming variables but no values', async () => {
     const { INCLUIR_PRINT_SERVICE_TOKEN: _omit, ...partial } = env();

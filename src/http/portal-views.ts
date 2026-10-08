@@ -336,6 +336,16 @@ export function orderPage(view: OrderView): Html {
     <dt>Impresso em</dt><dd>${dateTime(order.printedAt)}</dd>
   </dl>
   <p><a class="button secondary" href="/orders/${encodeURIComponent(order.id)}">Consultar novamente</a></p>
+  ${
+    order.generalInstructions
+      ? html`<section id="general-instructions">
+    <h2>Instruções gerais</h2>
+    <p>Estas instruções se aplicam ao pedido completo, sem vínculo por arquivo.</p>
+    <p class="instructions">${order.generalInstructions.text}</p>
+    <ul>${order.generalInstructions.files.map((file) => html`<li>${order.status === 'cancelled' ? file.name : fileLine(`${api}/files/${encodeURIComponent(file.id)}`, file, 'Baixar arquivo')}</li>`)}</ul>
+  </section>`
+      : ''
+  }
   <h2>Arquivos</h2>
   <ol class="jobs">
   ${order.jobs.map(

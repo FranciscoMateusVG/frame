@@ -330,7 +330,6 @@
           ]
         },
         "jobs": {
-          "minItems": 1,
           "type": "array",
           "items": {
             "$ref": "#/$defs/PrintJob"
@@ -355,6 +354,26 @@
               "type": "null"
             }
           ]
+        },
+        "generalInstructions": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/File"
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "text",
+            "files"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -372,7 +391,30 @@
         "currentQuote",
         "cancellationReason"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "generalInstructions"
+            ]
+          },
+          "then": {
+            "properties": {
+              "jobs": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "jobs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
     },
     "Error": {
       "type": "object",

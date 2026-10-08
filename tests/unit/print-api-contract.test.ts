@@ -90,3 +90,23 @@ describe('frozen print-portal v1 contract', () => {
     ).toBe(false);
   });
 });
+
+it('accepts unpaired general instructions only for legacy jobs=[] and validates every file', () => {
+  const original = (orders['GET /orders/:id (ready)'] as { order: { jobs: { file: unknown }[] } })
+    .order;
+  const generalInstructions = {
+    text: 'Texto integral\nSem vínculo por arquivo',
+    files: original.jobs.map((j) => j.file),
+  };
+  const legacy = { ...original, jobs: [], generalInstructions };
+  expect(OrderResponseSchema.safeParse({ order: legacy }).success).toBe(true);
+  for (const order of [
+    { ...original, generalInstructions },
+    { ...legacy, generalInstructions: null },
+    { ...legacy, generalInstructions: { ...generalInstructions, files: [] } },
+    { ...legacy, generalInstructions: { ...generalInstructions, text: 3 } },
+    { ...legacy, generalInstructions: { ...generalInstructions, bucket: 'private' } },
+    { ...legacy, generalInstructions: { ...generalInstructions, files: [{}] } },
+  ])
+    expect(OrderResponseSchema.safeParse({ order }).success).toBe(false);
+});
