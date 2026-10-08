@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import urllib.request
+from timing import breakdown
 
 STAGES = ["install", "lint-format", "typecheck-compile", "tests", "image-build",
           "staging-deploy", "staging-smoke"]
@@ -239,19 +240,40 @@ def report():
         req = urllib.request.Request(jobs_url, headers=headers)
         with opener.open(req, timeout=20) as response:
             jobs = json.load(response)["jobs"]
+        data["github_jobs"] = [{"name": j["name"], "started_at": j["started_at"],
+            "completed_at": j["completed_at"], "steps": [
+                {k: step.get(k) for k in ("name", "started_at", "completed_at", "conclusion")}
+                for step in j["steps"]]} for j in jobs]
         job = next(j for j in jobs if j["name"] == os.environ["GITHUB_JOB"])
         data["github_job"] = {"started_at": job["started_at"], "completed_at": job["completed_at"],
             "steps": [{k: step.get(k) for k in ("name", "started_at", "completed_at", "conclusion")}
                       for step in job["steps"]]}
     except Exception:
         data["github_metadata_status"] = "unavailable"
+    # The associated merged PR supplies the actual merge time, not an inferred
+    # commit date. This public metadata query needs no additional token permission.
+    if data.get("event") == "push" and (data.get("smoke") or {}).get("completed_at"):
+        try:
+            pulls_url = f'https://api.github.com/repos/{data["repo"]}/commits/{data["source_sha"]}/pulls'
+            req = urllib.request.Request(pulls_url, headers={"Accept": "application/vnd.github+json"})
+            with opener.open(req, timeout=20) as response: pulls = json.load(response)
+            merged = [p for p in pulls if p.get("merged_at") and p.get("merge_commit_sha") == data["source_sha"]]
+            if len(merged) == 1: data["merged_at"] = merged[0]["merged_at"]
+        except Exception:
+            data["merge_metadata_status"] = "unavailable"
+    data["timing_breakdown"] = breakdown(data.get("merged_at"), data.get("workflow_created_at"),
+        (data.get("smoke") or {}).get("completed_at"), data.get("github_jobs", []), data["stages"])
     data["checks_job"] = load("checks-report")
     data["image_cleanup"] = load("image-cleanup")
     data["limits"] = ["GitHub concurrency may cancel pending runs; retain cancellation metadata, not replacement samples","CI image is not the image rebuilt by Dokploy",
         "Webhook does not expose deployment ID, remote image ID, or internal finishedAt",
         "Artifact upload and workflow completion occur after this report; retain GitHub run metadata",
         "Runner death/offline can prevent artifact publication; missing evidence is not success"]
+    if (data.get("smoke") or {}).get("status") == "success" and data["timing_breakdown"]["status"] != "complete":
+        data["comparison_valid"] = False
     save("ttp-timings", data)
+    if (data.get("smoke") or {}).get("status") == "success" and data["timing_breakdown"]["status"] != "complete":
+        raise RuntimeError("successful smoke requires timing breakdown evidence")
 
 
 if __name__ == "__main__":
