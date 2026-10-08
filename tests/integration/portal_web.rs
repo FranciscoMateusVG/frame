@@ -1324,3 +1324,28 @@ async fn early_rejection_waits_for_the_body_so_slow_writers_read_the_answer() {
     }
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_truncated_upstream_file_never_reaches_the_browser_as_complete() {
+    use crate::portal_adapter::{file_response, raw_upstream};
+    let clock = TestClock::at(2026, 10, 8);
+    let origin = raw_upstream(file_response("Content-Length: 100000\r\n", b"%PDF-1.4\n")).await;
+    let adapter: Arc<dyn PrintApi> =
+        Arc::new(PrintApiHono::new(&origin, TOKEN, Timeouts::default()).unwrap());
+    let server = start_portal(adapter, clock.as_fn(), Observability::default(), |_| {}).await;
+    let b = Browser::new(&server.base_url);
+    assert_eq!(b.login(PASSWORD).await.0, 200);
+    let path = format!(
+        "/api/print/v1/orders/{}/files/{}",
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4()
+    );
+    let response = b.send(b.request(Method::GET, &path)).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()[header::CONTENT_LENGTH], "100000");
+    assert!(
+        response.bytes().await.is_err(),
+        "browser sees an aborted transfer"
+    );
+    server.shutdown().await;
+}

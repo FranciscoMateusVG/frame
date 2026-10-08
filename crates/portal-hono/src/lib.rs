@@ -32,6 +32,9 @@ pub const SYSTEM: &str = "incluir-hono";
 const PREFIX: &str = "/api/print-portal/v1";
 /// JSON bodies larger than this are not a contract response.
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
+/// Largest file the portal relays (print files are ≤ 20 MiB upstream;
+/// quotes/NFs ≤ 5 MiB). Same bound as the other portals.
+pub const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct Timeouts {
@@ -290,14 +293,43 @@ fn download(response: Response) -> ApiResult<Download> {
         .and_then(disposition_filename)
         .map(|n| sanitize_download_name(&n))
         .unwrap_or_else(|| "arquivo".into());
-    let length = response.content_length();
-    let body = response
-        .bytes_stream()
-        .map_err(std::io::Error::other)
-        .boxed();
+    // A relayed file must declare its size, within the cap, and the stream
+    // must deliver exactly that: a short or overlong body is an error, never
+    // a download that merely looks complete.
+    let declared = response
+        .content_length()
+        .filter(|n| (1..=MAX_DOWNLOAD_BYTES).contains(n))
+        .ok_or(ApiError::Unavailable { reason: "contract" })?;
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
+    let body = futures_util::stream::unfold(
+        (stream, 0u64, false),
+        move |(mut stream, seen, done)| async move {
+            if done {
+                return None;
+            }
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    let seen = seen + chunk.len() as u64;
+                    if seen > declared {
+                        let error = std::io::Error::other("body longer than Content-Length");
+                        Some((Err(error), (stream, seen, true)))
+                    } else {
+                        Some((Ok(chunk), (stream, seen, false)))
+                    }
+                }
+                Some(Err(error)) => Some((Err(error), (stream, seen, true))),
+                None if seen == declared => None,
+                None => {
+                    let error = std::io::Error::other("body shorter than Content-Length");
+                    Some((Err(error), (stream, seen, true)))
+                }
+            }
+        },
+    )
+    .boxed();
     Ok(Download {
         mime,
-        length,
+        length: Some(declared),
         filename,
         body,
     })

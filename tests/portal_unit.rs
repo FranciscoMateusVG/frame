@@ -2,6 +2,8 @@
 //! `PrintApi` contract against the in-memory upstream fake.
 #[path = "helpers/portal_api_conformance.rs"]
 mod portal_api_conformance;
+#[path = "unit/portal_config.rs"]
+mod portal_config;
 #[path = "unit/portal_domain.rs"]
 mod portal_domain;
 #[path = "helpers/portal_fixtures.rs"]

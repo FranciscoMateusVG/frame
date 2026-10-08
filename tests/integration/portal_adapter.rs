@@ -121,3 +121,94 @@ fn adapter_configuration_is_validated_without_echoing_values() {
         .is_err()
     );
 }
+
+/// An upstream that answers every connection with exactly `response`.
+pub(crate) async fn raw_upstream(response: Vec<u8>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let response = response.clone();
+            tokio::spawn(async move {
+                let mut head = vec![0u8; 8192];
+                let _ = socket.read(&mut head).await;
+                let _ = socket.write_all(&response).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    origin
+}
+
+pub(crate) fn file_response(headers: &str, body: &[u8]) -> Vec<u8> {
+    let mut r = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\n\
+         Content-Disposition: attachment; filename=\"a.pdf\"\r\nConnection: close\r\n{headers}\r\n"
+    )
+    .into_bytes();
+    r.extend_from_slice(body);
+    r
+}
+
+async fn collect(download: frame_portal_port::Download) -> Result<Vec<u8>, std::io::Error> {
+    use futures_util::TryStreamExt;
+    download
+        .body
+        .try_fold(Vec::new(), |mut acc, chunk| async move {
+            acc.extend_from_slice(&chunk);
+            Ok(acc)
+        })
+        .await
+}
+
+#[tokio::test]
+async fn downloads_are_bounded_and_must_match_their_declared_length() {
+    let order = uuid::Uuid::new_v4().to_string();
+    let file = uuid::Uuid::new_v4().to_string();
+    let adapter = |origin: &str| PrintApiHono::new(origin, TOKEN, Timeouts::default()).unwrap();
+
+    // Exact length: streamed as is.
+    let ok = raw_upstream(file_response("Content-Length: 9\r\n", b"%PDF-1.4\n")).await;
+    let d = adapter(&ok).order_file(&order, &file).await.unwrap();
+    assert_eq!(d.length, Some(9));
+    assert_eq!(collect(d).await.unwrap(), b"%PDF-1.4\n");
+
+    // No declared length (chunked): refused before streaming.
+    let chunked = raw_upstream(file_response(
+        "Transfer-Encoding: chunked\r\n",
+        b"9\r\n%PDF-1.4\n\r\n0\r\n\r\n",
+    ))
+    .await;
+    assert_eq!(
+        unavailable(adapter(&chunked).order_file(&order, &file).await),
+        "contract"
+    );
+
+    // Declared beyond the cap: refused before streaming.
+    let huge = raw_upstream(file_response(
+        &format!(
+            "Content-Length: {}\r\n",
+            frame_portal_hono::MAX_DOWNLOAD_BYTES + 1
+        ),
+        b"%PDF",
+    ))
+    .await;
+    assert_eq!(
+        unavailable(adapter(&huge).quote_file(&order, &file).await),
+        "contract"
+    );
+
+    // Short body: the stream fails instead of ending as if complete.
+    let short = raw_upstream(file_response("Content-Length: 1000\r\n", b"%PDF-1.4\n")).await;
+    let d = adapter(&short).order_file(&order, &file).await.unwrap();
+    assert!(
+        collect(d).await.is_err(),
+        "truncated body must not look complete"
+    );
+
+    // Longer than declared: never more than the declared bytes.
+    let long = raw_upstream(file_response("Content-Length: 4\r\n", b"%PDF-1.4\n")).await;
+    let d = adapter(&long).order_file(&order, &file).await.unwrap();
+    assert_eq!(collect(d).await.unwrap(), b"%PDF");
+}

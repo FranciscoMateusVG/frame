@@ -40,16 +40,21 @@ fn fail<T>(message: &str) -> Result<T, ConfigError> {
     Err(ConfigError(message.into()))
 }
 
+/// Test-only TTL overrides may shorten the spec values (§5: 30 min idle,
+/// 8 h absolute), never lengthen them.
 fn seconds(
     env: &dyn Fn(&str) -> Option<String>,
     name: &str,
-    default: TimeDelta,
+    max: TimeDelta,
 ) -> Result<TimeDelta, ConfigError> {
     match env(name) {
-        None => Ok(default),
+        None => Ok(max),
         Some(raw) => match raw.parse::<i64>() {
-            Ok(n) if (1..=7 * 24 * 3600).contains(&n) => Ok(TimeDelta::seconds(n)),
-            _ => fail(&format!("{name} must be a positive number of seconds")),
+            Ok(n) if (1..=max.num_seconds()).contains(&n) => Ok(TimeDelta::seconds(n)),
+            _ => fail(&format!(
+                "{name} must be between 1 and {} seconds",
+                max.num_seconds()
+            )),
         },
     }
 }
