@@ -148,3 +148,21 @@ Never delete Dokploy projects/services/databases.
 KR Digital production tracks `release/portal-phoenix`, isolated at d3660de5.
 These workflows and composes neither reference nor modify production. Promoting
 production remains a separate operator-approved operation.
+
+### Explicit merge-to-smoke accounting
+
+`timing_breakdown` uses the associated PR's real `merged_at`, workflow creation,
+both jobs and all steps from GitHub's API, and precise stage/smoke boundaries. It
+partitions wall time without double counting into dispatch, queue, setup,
+cache_restore/save, handoff, timed_stages, evidence_report_upload, job_teardown,
+job_finalization, job_overhead and unattributed (zeros explicit). Queue/handoff
+are scheduling delays, not inferred as pure runner occupancy. `job_overhead` is
+time inside a job not covered by a measured interval; do not invent its cause.
+
+GitHub step timestamps have one-second precision; small adjacent-bucket ambiguity
+is stated. Monotonic stage durations are retained separately; the wall partition
+clips process-exit overhead after smoke acceptance. Dokploy queue/rebuild is
+already inside staging-deploy, not an extra bucket. Image cleanup and final
+artifact publication happen after the TTP endpoint and are not added to it.
+Successful smoke with unavailable merge/jobs metadata fails the reporting gate,
+retaining incomplete evidence rather than calling it a valid measured sample.
