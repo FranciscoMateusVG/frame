@@ -48,6 +48,10 @@ pnpm db:reset    # drop volume, restart, re-run migrations
 | `pnpm check:codegen-drift` | Verify generated types match live schema |
 | `pnpm verify-hooks` | Verify git hooks are installed |
 | `pnpm build` | Build ESM + CJS with types (tsup) |
+| `pnpm build:portal` | Build the print-shop portal artifact `dist-portal/server.mjs` (single file, deps inlined) |
+| `pnpm portal` | Run the print-shop portal from source (see [Print-shop portal](#print-shop-portal)) |
+| `pnpm test:portal` | Portal tests only (no Docker needed) |
+| `pnpm loc:portal` | Lines of code of the portal only |
 | `pnpm check` | **Run all checks** — the Definition of Done |
 
 ## Architecture
@@ -62,6 +66,7 @@ src/
 ├── errors/         # Typed error classes.
 ├── observability/  # Logger interface, implementations, tracer re-exports.
 ├── testing/        # Exported test helpers (frame/testing subpath).
+├── http/           # Transport + composition root (the print-shop portal's Hono app and entrypoint).
 └── index.ts        # Public API surface.
 ```
 
@@ -163,9 +168,42 @@ The `examples/` directory holds runnable demonstrations of Frame's patterns. Eac
 |------|--------------|
 | `examples/create-cat.ts` | Bare SDK usage — wire up `CatRepositoryPostgres`, call `createCat`, fetch + delete |
 | `examples/create-cat.with-otel.ts` | Same flow with the full OTel SDK registered. Spans printed via `ConsoleSpanExporter` |
+| `examples/print-portal.hono.ts` | The print-shop portal end to end in one process: a fake Incluir service API on a real port, the portal wired like production, and the supplier journey through its JSON API |
 | `examples/create-cat.hono.ts` | Use case exposed as an HTTP API via [Hono](https://hono.dev). Demonstrates how a transport adapter stays a thin shell — parse → invoke use case → translate domain errors to HTTP status codes (201 / 200 / 409 / 400) |
 
 The Hono example is the template for any transport layer (Hono, Express, Fastify, tRPC). Frame stays transport-agnostic: the use case takes `(deps, input)`, returns a domain entity, and throws typed domain errors. The route handler is the only place HTTP exists.
+
+## Print-shop portal
+
+A real application built on the template: the BFF + server-rendered HTML that
+the print shop uses to collect files, quote, confirm printing and send the
+monthly NF (spec `print-portal.md` §4.3/§4.5/§5/§7). It has **no database and
+no object storage**: it talks only to the Incluir Hono API
+(`/api/print-portal/v1`, frozen contract mirrored in
+`src/adapters/print-api.contract.ts`) with a server-only service token.
+
+| Layer | Files |
+|---|---|
+| domain | `print-order.ts`, `monthly-close.ts`, `money.ts`, `portal-session.ts` |
+| ports / adapters | `print-api.ts` (+ `.http.ts` real, `.memory.ts` fake, `.contract.ts` Zod mirror), `session-store.ts` (+ `.memory.ts`), `login-throttle.ts` (+ `.memory.ts`) |
+| use cases | `log-in`, `log-out`, `open-session`, `authenticate-session`, `list-orders`, `get-order`, `download-*`, `collect-order-files`, `submit-quote`, `mark-order-printed`, `get-monthly-close`, `submit-invoice` |
+| http | `portal-app.ts`, `portal-api-routes.ts`, `portal-html-routes.ts`, `portal-views.ts`, `portal-http.ts`, `portal-config.ts`, `portal-assets.ts`, `server.ts` |
+
+Run it (all four variables are required; startup refuses otherwise):
+
+```bash
+PRINT_PORTAL_PASSWORD=… INCLUIR_PRINT_SERVICE_TOKEN=… \
+INCLUIR_PRINT_API_ORIGIN=https://api.example PRINT_PORTAL_ORIGIN=https://grafica.example \
+PORT=3000 pnpm portal                              # from source
+pnpm build:portal && node dist-portal/server.mjs   # production artifact
+```
+
+Optional: `HOST`, `PRINT_PORTAL_TRUSTED_PROXIES` (comma-separated proxy
+addresses whose `X-Forwarded-For` is trusted), and for isolated tests only
+`PRINT_PORTAL_SESSION_IDLE_SECONDS` / `PRINT_PORTAL_SESSION_ABSOLUTE_SECONDS`.
+Sessions live in process memory (one replica; a restart logs everyone out).
+See `BENCHMARK.md` for the portal-only commands used in the TS/Rust/Elixir
+comparison.
 
 ## How to Add a New Use Case
 

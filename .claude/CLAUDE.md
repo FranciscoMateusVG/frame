@@ -19,6 +19,7 @@
 
 - **Every use case** wraps in exactly one span named after the use case (`createCat`, `findCatById`, etc.). The span captures non-PII input attributes, records exceptions, and sets error status on failure.
 - **Every adapter method** wraps in one span named `db.<table>.<method>` (e.g., `db.cats.save`, `db.cats.findById`). Set OTel semantic attributes: `db.system`, `db.operation.name`, `db.collection.name`.
+- **HTTP client adapters** (e.g. `PrintApiHttp`) use `print_api.<operation>` spans with `http.request.method`, `url.template`, `server.address`, `http.response.status_code`; their memory fakes emit the same names with `server.address = "memory"`. Pure in-memory registries (session store, login throttle) are sub-millisecond and are not instrumented.
 - **The memory adapter is instrumented identically to the Postgres adapter.** Same span names, same attributes (`db.system` = `"memory"`). The conformance suite asserts both produce equivalent spans.
 - **Errors** are recorded on the active span via `span.recordException()` and `span.setStatus({ code: SpanStatusCode.ERROR })` before being rethrown.
 
@@ -60,6 +61,7 @@ src/adapters/       — Infrastructure: interfaces + implementations.
 src/errors/         — Typed error classes.
 src/observability/  — Logger interface, implementations, tracer re-exports, Observability type.
 src/testing/        — Exported test helpers (frame/testing subpath). Uses OTel SDK.
+src/http/           — Transport + composition root (print-shop portal). Nothing else may import it.
 src/index.ts        — Public API surface.
 tests/unit/         — Unit + property-based tests.
 tests/integration/  — Tests against real Postgres via Testcontainers.

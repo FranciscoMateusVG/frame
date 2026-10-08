@@ -76,6 +76,11 @@ describe('portal HTML', () => {
     expect(body).toContain('Nenhum pedido');
   });
 
+  it('Referrer-Policy keeps Origin on same-origin form posts (no-referrer makes browsers send Origin: null)', async () => {
+    const res = await browser.get('/login');
+    expect(res.headers.get('referrer-policy')).toBe('same-origin');
+  });
+
   it('login form without our Origin is refused', async () => {
     const page = await (await browser.get('/login')).text();
     const res = await browser.postForm(
@@ -341,6 +346,60 @@ describe('portal HTML', () => {
     expect(def).toContain('value="2026-09"');
     expect(def).toContain('Total calculado');
     expect(def).toContain('Nenhum pedido impresso nesta competência.');
+  });
+
+  it('invoices: items, NF submission with divergence, rejection and resubmission', async () => {
+    h.clock.now = new Date('2026-09-15T15:00:00.000Z');
+    const order = seedTwoFileOrder(h.api);
+    await h.api.markCollected(
+      order.id,
+      { revision: 1 },
+      { ifMatch: `"${order.id}:1"`, idempotencyKey: randomUUID() },
+    );
+    const q = await h.api.submitQuote(
+      order.id,
+      { amountCents: 57_900, orderRevision: 1, file: { filename: 'q.pdf', bytes: PDF_BYTES } },
+      { ifMatch: `"${order.id}:2"`, idempotencyKey: randomUUID() },
+    );
+    const approved = h.api.approveQuote(order.id);
+    await h.api.markPrinted(
+      order.id,
+      { revision: 1, quoteId: q.value.currentQuote?.id ?? '' },
+      { ifMatch: `"${order.id}:${approved.version}"`, idempotencyKey: randomUUID() },
+    );
+    h.clock.now = new Date('2026-10-08T12:00:00.000Z');
+    await htmlLogin(browser);
+
+    const page = await (await browser.get('/invoices?competence=2026-09')).text();
+    expect(page).toContain(order.reference);
+    expect(page).toContain('R$ 579,00');
+    expect(page).toContain('Valor total da NF');
+    expect(page).toContain('Arquivo da NF');
+    expect(page).toContain('Enviar NF');
+
+    const submit = (html: string, amount: string) => {
+      const form = new FormData();
+      form.set('_csrf', hidden(html, '_csrf'));
+      form.set('idempotencyKey', hidden(html, 'idempotencyKey'));
+      form.set('etag', hidden(html, 'etag').replaceAll('&quot;', '"'));
+      form.set('amount', amount);
+      form.set('file', new File([PDF_BYTES], 'nf.pdf', { type: 'application/pdf' }));
+      return browser.postForm('/invoices/2026-09', form);
+    };
+    const sent = await submit(page, '570,00');
+    expect(sent.status).toBe(303);
+    const waiting = await (await browser.get(sent.headers.get('location') ?? '')).text();
+    expect(waiting).toContain('NF enviada. Aguardando conferência.');
+    expect(waiting).toContain('diverge do total calculado');
+    expect(waiting).toContain('Baixar NF');
+    expect(waiting).not.toContain('>Enviar NF</button>');
+
+    h.api.decideInvoice('2026-09', 'rejected', 'Valor diferente do calculado');
+    const rejected = await (await browser.get('/invoices?competence=2026-09')).text();
+    expect(rejected).toContain('NF rejeitada. Motivo: Valor diferente do calculado');
+    expect(rejected).toContain('Enviar nova NF');
+    expect((await submit(rejected, '579,00')).status).toBe(303);
+    expect((await h.api.getMonthlyClose('2026-09')).value.declaredTotalCents).toBe(57_900);
   });
 
   it('invoices: an upstream without monthly-close routes shows "Notas fiscais ainda indisponíveis"', async () => {

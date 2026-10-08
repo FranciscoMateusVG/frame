@@ -8,12 +8,18 @@ importers:
 
   .:
     dependencies:
+      '@hono/node-server':
+        specifier: ^2.0.2
+        version: 2.0.2(hono@4.12.18)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
       '@opentelemetry/api-logs':
         specifier: ^0.215.0
         version: 0.215.0
+      hono:
+        specifier: ^4.12.18
+        version: 4.12.18
       kysely:
         specifier: ^0.28.16
         version: 0.28.16
@@ -27,9 +33,6 @@ importers:
       '@biomejs/biome':
         specifier: ^2.4.13
         version: 2.4.13
-      '@hono/node-server':
-        specifier: ^2.0.2
-        version: 2.0.2(hono@4.12.18)
       '@opentelemetry/sdk-logs':
         specifier: 0.215.0
         version: 0.215.0(@opentelemetry/api@1.9.1)
@@ -66,9 +69,6 @@ importers:
       fast-check:
         specifier: ^4.7.0
         version: 4.7.0
-      hono:
-        specifier: ^4.12.18
-        version: 4.12.18
       husky:
         specifier: ^9.1.7
         version: 9.1.7

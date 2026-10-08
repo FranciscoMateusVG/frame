@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import type { Upload } from '../adapters/print-api.js';
 import { parseBrlToCents } from '../domain/money.js';
 import { competenceOf, isValidCompetence, previousCompetence } from '../domain/monthly-close.js';
 import type { PortalSession } from '../domain/portal-session.js';
@@ -36,6 +37,7 @@ import { submitQuote } from '../use-cases/submit-quote.js';
 import {
   clearSessionCookies,
   clientKey,
+  compact,
   DOCUMENT_MAX_BYTES,
   originAllowed,
   type PortalContext,
@@ -123,6 +125,116 @@ function text(form: FormFields, name: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function isUpstreamError(
+  error: unknown,
+): error is UpstreamRejectedError | UpstreamUnavailableError {
+  return error instanceof UpstreamRejectedError || error instanceof UpstreamUnavailableError;
+}
+
+/**
+ * Form state for the next render. Same ETag as the failed attempt → nothing
+ * changed upstream: keep its key so a repeat is the same intent. Otherwise a
+ * fresh key for a fresh decision.
+ */
+function nextForm(etag: string, retry: ActionForm | undefined, keepAmount: boolean): ActionForm {
+  const reuse = retry !== undefined && retry.etag === etag;
+  const amountText = reuse || keepAmount ? retry?.amountText : undefined;
+  return {
+    idempotencyKey: reuse ? retry.idempotencyKey : randomUUID(),
+    etag,
+    ...(amountText !== undefined ? { amountText } : {}),
+  };
+}
+
+type DocumentForm =
+  | { readonly ok: true; readonly amountCents: number; readonly upload: Upload }
+  | { readonly ok: false; readonly message: string; readonly status: number };
+
+/** BRL amount + one document from an upload form (quote or NF). */
+async function readDocumentForm(
+  form: FormFields,
+  labels: { amount: string; file: string; fallbackName: string },
+): Promise<DocumentForm> {
+  const amountCents = parseBrlToCents(text(form, 'amount') ?? '');
+  const file = form.file;
+  if (amountCents === null) {
+    return {
+      ok: false,
+      status: 400,
+      message: `${labels.amount} inválido. Use o formato 1.234,56.`,
+    };
+  }
+  if (!(file instanceof File) || file.size === 0) {
+    return { ok: false, status: 400, message: `Selecione o ${labels.file}.` };
+  }
+  if (file.size > DOCUMENT_MAX_BYTES) {
+    return { ok: false, status: 413, message: 'Arquivo acima de 5 MB.' };
+  }
+  return {
+    ok: true,
+    amountCents,
+    upload: {
+      filename: file.name || labels.fallbackName,
+      bytes: new Uint8Array(await file.arrayBuffer()),
+    },
+  };
+}
+
+/**
+ * Banner/status/form for re-rendering after a failed NF command. A refused
+ * command's key is released upstream and may be reused — except after a
+ * conflict, where it is bound to another intent.
+ */
+function retryAfterFailure(
+  error: UpstreamRejectedError | UpstreamUnavailableError,
+  attempt: ActionForm,
+): { banner: Banner; status: number; retry: ActionForm } {
+  if (error instanceof UpstreamUnavailableError) {
+    return { banner: UNAVAILABLE, status: 503, retry: attempt };
+  }
+  const retry =
+    error.code === 'IDEMPOTENCY_CONFLICT' ? { ...attempt, idempotencyKey: randomUUID() } : attempt;
+  return { banner: rejectionBanner(error), status: error.status, retry };
+}
+
+function ordersHref(status: string | undefined): string {
+  return status ? `/orders?status=${status}` : '/orders';
+}
+
+/** Login failure → status + message, or null for unexpected errors. */
+function loginFailure(error: unknown): { status: number; text: string } | null {
+  if (error instanceof InvalidCredentialsError) return { status: 401, text: 'Senha incorreta.' };
+  if (error instanceof LoginRateLimitedError) {
+    const minutes = Math.max(1, Math.ceil(error.retryAfterSeconds / 60));
+    return {
+      status: 429,
+      text: `Muitas tentativas. Tente novamente em ${minutes} minuto${minutes > 1 ? 's' : ''}.`,
+    };
+  }
+  if (error instanceof InvalidRequestError) return { status: 400, text: 'Informe a senha.' };
+  if (error instanceof CsrfFailedError) {
+    return { status: 403, text: 'Sessão de login expirada. Tente novamente.' };
+  }
+  return null;
+}
+
+/** /orders query: status filter, cursor and the back-stack for "Anterior". */
+function ordersQuery(c: PortalContext) {
+  const statusParam = c.req.query('status');
+  const cursorParam = c.req.query('cursor');
+  return {
+    status: isOrderStatus(statusParam) ? statusParam : undefined,
+    cursor: cursorParam && cursorParam.length <= 512 ? cursorParam : undefined,
+    back: (c.req.queries('back') ?? []).filter((b) => b.length <= 512).slice(-50),
+  };
+}
+
+function successBanner(c: PortalContext): { banner?: Banner } {
+  const done = c.req.query('ok');
+  const message = done ? SUCCESS[done] : undefined;
+  return message ? { banner: { kind: 'success', text: message } } : {};
+}
+
 export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
   const app = new Hono<PortalEnv>();
 
@@ -161,53 +273,44 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
     return (await c.req.parseBody({ all: true }).catch(() => ({}))) as FormFields;
   }
 
+  /** The order, or the error page to show instead. */
+  async function loadOrder(
+    c: PortalContext,
+    session: PortalSession,
+    orderId: string,
+    opts: { banner?: Banner; status?: number },
+  ): Promise<{ value: Order; etag: string } | Response> {
+    try {
+      return await getOrder(deps.print, orderId);
+    } catch (error) {
+      if (error instanceof UpstreamRejectedError && error.status === 404) {
+        const notFound: Banner = { kind: 'error', text: 'Pedido não encontrado.' };
+        return c.html(errorPage('Pedido não encontrado', notFound, session.csrfToken), 404);
+      }
+      if (!isUpstreamError(error)) throw error;
+      return c.html(
+        orderUnavailablePage(session.csrfToken, orderId, opts.banner ?? UNAVAILABLE),
+        (opts.status ?? 503) as 503,
+      );
+    }
+  }
+
   async function renderOrder(
     c: PortalContext,
     session: PortalSession,
     orderId: string,
     opts: { banner?: Banner; status?: number; retry?: ActionForm } = {},
   ): Promise<Response> {
-    const status = (opts.status ?? 200) as 200;
-    let tagged: { value: Order; etag: string };
-    try {
-      tagged = await getOrder(deps.print, orderId);
-    } catch (error) {
-      if (error instanceof UpstreamRejectedError && error.status === 404) {
-        return c.html(
-          errorPage(
-            'Pedido não encontrado',
-            { kind: 'error', text: 'Pedido não encontrado.' },
-            session.csrfToken,
-          ),
-          404,
-        );
-      }
-      if (error instanceof UpstreamUnavailableError || error instanceof UpstreamRejectedError) {
-        return c.html(
-          orderUnavailablePage(session.csrfToken, orderId, opts.banner ?? UNAVAILABLE),
-          (opts.status ?? 503) as 503,
-        );
-      }
-      throw error;
-    }
-    // Same ETag as the failed attempt → nothing changed: keep its key so a
-    // repeat is the same intent. Otherwise a fresh key for a fresh decision.
-    const reuse = opts.retry && opts.retry.etag === tagged.etag;
-    const form: ActionForm = {
-      idempotencyKey: reuse && opts.retry ? opts.retry.idempotencyKey : randomUUID(),
-      etag: tagged.etag,
-      ...(reuse && opts.retry?.amountText !== undefined
-        ? { amountText: opts.retry.amountText }
-        : {}),
-    };
+    const tagged = await loadOrder(c, session, orderId, opts);
+    if (tagged instanceof Response) return tagged;
     return c.html(
       orderPage({
         csrfToken: session.csrfToken,
         order: tagged.value,
-        form,
+        form: nextForm(tagged.etag, opts.retry, false),
         ...(opts.banner ? { banner: opts.banner } : {}),
       }),
-      status,
+      (opts.status ?? 200) as 200,
     );
   }
 
@@ -230,6 +333,16 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
       });
     }
     throw error;
+  }
+
+  /** Origin + session + CSRF for a form command; a Response when refused. */
+  async function beginCommand(
+    c: PortalContext,
+  ): Promise<{ form: FormFields; session: PortalSession } | Response> {
+    const form = await readForm(c);
+    if (!form) return forbidden(c);
+    const session = await sessionOrLogin(c, text(form, '_csrf'));
+    return session instanceof Response ? session : { form, session };
   }
 
   /** Validated hidden command fields, or null. */
@@ -273,35 +386,19 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
       setSessionCookie(c, result.session.id);
       return c.redirect('/orders', 303);
     } catch (error) {
+      const failure = loginFailure(error);
+      if (!failure) throw error;
+      if (error instanceof LoginRateLimitedError) {
+        c.header('Retry-After', String(error.retryAfterSeconds));
+      }
       const fresh = await openSession(deps.session, {
         sessionIds: [sessionIdFrom(c), preSessionIdFrom(c)],
       });
       if (fresh.created) setPreSessionCookie(c, fresh.session.id);
-      const csrf = fresh.session.csrfToken;
-      if (error instanceof InvalidCredentialsError) {
-        return c.html(loginPage(csrf, { kind: 'error', text: 'Senha incorreta.' }), 401);
-      }
-      if (error instanceof LoginRateLimitedError) {
-        c.header('Retry-After', String(error.retryAfterSeconds));
-        const minutes = Math.max(1, Math.ceil(error.retryAfterSeconds / 60));
-        return c.html(
-          loginPage(csrf, {
-            kind: 'error',
-            text: `Muitas tentativas. Tente novamente em ${minutes} minuto${minutes > 1 ? 's' : ''}.`,
-          }),
-          429,
-        );
-      }
-      if (error instanceof InvalidRequestError) {
-        return c.html(loginPage(csrf, { kind: 'error', text: 'Informe a senha.' }), 400);
-      }
-      if (error instanceof CsrfFailedError) {
-        return c.html(
-          loginPage(csrf, { kind: 'error', text: 'Sessão de login expirada. Tente novamente.' }),
-          403,
-        );
-      }
-      throw error;
+      return c.html(
+        loginPage(fresh.session.csrfToken, { kind: 'error', text: failure.text }),
+        failure.status as 401,
+      );
     }
   });
 
@@ -323,50 +420,31 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
   app.get('/orders', async (c) => {
     const session = await sessionOrLogin(c);
     if (session instanceof Response) return session;
-    const statusParam = c.req.query('status');
-    const status = isOrderStatus(statusParam) ? statusParam : undefined;
-    const cursorParam = c.req.query('cursor');
-    const cursor = cursorParam && cursorParam.length <= 512 ? cursorParam : undefined;
-    const back = (c.req.queries('back') ?? []).filter((b) => b.length <= 512).slice(-50);
+    const { status, cursor, back } = ordersQuery(c);
     try {
-      const page = await listOrders(deps.print, {
-        limit: 20,
-        ...(status ? { status } : {}),
-        ...(cursor ? { cursor } : {}),
-      });
+      const page = await listOrders(deps.print, { limit: 20, ...compact({ status, cursor }) });
       return c.html(ordersPage({ csrfToken: session.csrfToken, status, page, cursor, back }));
     } catch (error) {
-      if (error instanceof UpstreamRejectedError && error.code === 'INVALID_CURSOR') {
-        return c.redirect(status ? `/orders?status=${status}` : '/orders', 302);
-      }
-      if (error instanceof UpstreamUnavailableError || error instanceof UpstreamRejectedError) {
-        return c.html(
-          ordersPage({ csrfToken: session.csrfToken, status, page: null, cursor, back }),
-          error instanceof UpstreamRejectedError ? (error.status as 429) : 503,
-        );
-      }
-      throw error;
+      if (!isUpstreamError(error)) throw error;
+      if (error.code === 'INVALID_CURSOR') return c.redirect(ordersHref(status), 302);
+      const httpStatus = error instanceof UpstreamRejectedError ? error.status : 503;
+      return c.html(
+        ordersPage({ csrfToken: session.csrfToken, status, page: null, cursor, back }),
+        httpStatus as 503,
+      );
     }
   });
 
   app.get('/orders/:id', async (c) => {
     const session = await sessionOrLogin(c);
     if (session instanceof Response) return session;
-    const done = c.req.query('ok');
-    const message = done ? SUCCESS[done] : undefined;
-    return renderOrder(
-      c,
-      session,
-      c.req.param('id'),
-      message ? { banner: { kind: 'success', text: message } } : {},
-    );
+    return renderOrder(c, session, c.req.param('id'), successBanner(c));
   });
 
   app.post('/orders/:id/collected', async (c) => {
-    const form = await readForm(c);
-    if (!form) return forbidden(c);
-    const session = await sessionOrLogin(c, text(form, '_csrf'));
-    if (session instanceof Response) return session;
+    const begun = await beginCommand(c);
+    if (begun instanceof Response) return begun;
+    const { form, session } = begun;
     const orderId = c.req.param('id');
     const fields = commandFields(form);
     const revision = Number(text(form, 'revision'));
@@ -390,10 +468,9 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
   });
 
   app.post('/orders/:id/printed', async (c) => {
-    const form = await readForm(c);
-    if (!form) return forbidden(c);
-    const session = await sessionOrLogin(c, text(form, '_csrf'));
-    if (session instanceof Response) return session;
+    const begun = await beginCommand(c);
+    if (begun instanceof Response) return begun;
+    const { form, session } = begun;
     const orderId = c.req.param('id');
     const fields = commandFields(form);
     const revision = Number(text(form, 'revision'));
@@ -424,52 +501,43 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
   });
 
   app.post('/orders/:id/quotes', htmlUploadLimit, async (c) => {
-    const form = await readForm(c);
-    if (!form) return forbidden(c);
-    const session = await sessionOrLogin(c, text(form, '_csrf'));
-    if (session instanceof Response) return session;
+    const begun = await beginCommand(c);
+    if (begun instanceof Response) return begun;
+    const { form, session } = begun;
     const orderId = c.req.param('id');
     const fields = commandFields(form);
     const orderRevision = Number(text(form, 'orderRevision'));
     if (!fields || !Number.isSafeInteger(orderRevision) || orderRevision < 1) {
       return badRequest(c, session, orderId, 'Formulário inválido. Recarregue a página.');
     }
-    const amountText = text(form, 'amount') ?? '';
-    const attempt = { idempotencyKey: fields.key, etag: fields.etag, amountText };
-    const amountCents = parseBrlToCents(amountText);
-    const file = form.file;
-    const invalid = (message: string, status = 400) =>
+    const attempt = {
+      idempotencyKey: fields.key,
+      etag: fields.etag,
+      amountText: text(form, 'amount') ?? '',
+    };
+    const invalid = (message: string, status: number) =>
       renderOrder(c, session, orderId, {
         banner: { kind: 'error', text: message },
         status,
         retry: attempt,
       });
-    if (amountCents === null)
-      return invalid('Valor do orçamento inválido. Use o formato 1.234,56.');
-    if (!(file instanceof File) || file.size === 0)
-      return invalid('Selecione o arquivo do orçamento.');
-    if (file.size > DOCUMENT_MAX_BYTES) return invalid('Arquivo acima de 5 MB.', 413);
+    const doc = await readDocumentForm(form, {
+      amount: 'Valor do orçamento',
+      file: 'arquivo do orçamento',
+      fallbackName: 'orcamento',
+    });
+    if (!doc.ok) return invalid(doc.message, doc.status);
     try {
       await submitQuote(
         deps.print,
-        {
-          orderId,
-          orderRevision,
-          amountCents,
-          file: {
-            filename: file.name || 'orcamento',
-            bytes: new Uint8Array(await file.arrayBuffer()),
-          },
-        },
+        { orderId, orderRevision, amountCents: doc.amountCents, file: doc.upload },
         { ifMatch: fields.etag, idempotencyKey: fields.key },
       );
     } catch (error) {
-      if (
+      const fileProblem =
         error instanceof UpstreamRejectedError &&
-        (error.code === 'FILE_TOO_LARGE' || error.code === 'UNSUPPORTED_MEDIA_TYPE')
-      ) {
-        return invalid(rejectionBanner(error).text, error.status);
-      }
+        (error.code === 'FILE_TOO_LARGE' || error.code === 'UNSUPPORTED_MEDIA_TYPE');
+      if (fileProblem) return invalid(rejectionBanner(error).text, error.status);
       return orderCommandFailed(c, session, orderId, error, attempt);
     }
     return c.redirect(`/orders/${encodeURIComponent(orderId)}?ok=quote`, 303);
@@ -487,22 +555,17 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
     const base = { csrfToken: session.csrfToken, competence, currentCompetence };
     try {
       const { value, etag } = await getMonthlyClose(deps.print, competence);
-      const reuse = opts.retry && opts.retry.etag === etag;
-      const form: ActionForm = {
-        idempotencyKey: reuse && opts.retry ? opts.retry.idempotencyKey : randomUUID(),
-        etag,
-        ...(opts.retry?.amountText !== undefined ? { amountText: opts.retry.amountText } : {}),
-      };
       return c.html(
         invoicesPage({
           ...base,
           close: value,
-          form,
+          form: nextForm(etag, opts.retry, true),
           ...(opts.banner ? { banner: opts.banner } : {}),
         }),
         (opts.status ?? 200) as 200,
       );
     } catch (error) {
+      if (!isUpstreamError(error)) throw error;
       if (error instanceof UpstreamRejectedError && error.status === 404) {
         // The monthly-close routes are not deployed upstream (yet).
         return c.html(
@@ -510,19 +573,16 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
           200,
         );
       }
-      if (error instanceof UpstreamUnavailableError || error instanceof UpstreamRejectedError) {
-        return c.html(
-          invoicesPage({
-            ...base,
-            close: null,
-            form: null,
-            unavailable: 'down',
-            banner: opts.banner ?? UNAVAILABLE,
-          }),
-          (opts.status ?? 503) as 503,
-        );
-      }
-      throw error;
+      return c.html(
+        invoicesPage({
+          ...base,
+          close: null,
+          form: null,
+          unavailable: 'down',
+          banner: opts.banner ?? UNAVAILABLE,
+        }),
+        (opts.status ?? 503) as 503,
+      );
     }
   }
 
@@ -534,21 +594,13 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
       requested && isValidCompetence(requested)
         ? requested
         : previousCompetence(competenceOf(deps.session.clock()));
-    const done = c.req.query('ok');
-    const message = done ? SUCCESS[done] : undefined;
-    return renderInvoices(
-      c,
-      session,
-      competence,
-      message ? { banner: { kind: 'success', text: message } } : {},
-    );
+    return renderInvoices(c, session, competence, successBanner(c));
   });
 
   app.post('/invoices/:competence', htmlUploadLimit, async (c) => {
-    const form = await readForm(c);
-    if (!form) return forbidden(c);
-    const session = await sessionOrLogin(c, text(form, '_csrf'));
-    if (session instanceof Response) return session;
+    const begun = await beginCommand(c);
+    if (begun instanceof Response) return begun;
+    const { form, session } = begun;
     const competence = c.req.param('competence');
     if (!isValidCompetence(competence)) return c.redirect('/invoices', 303);
     const fields = commandFields(form);
@@ -558,55 +610,32 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
         status: 400,
       });
     }
-    const amountText = text(form, 'amount') ?? '';
-    const attempt = { idempotencyKey: fields.key, etag: fields.etag, amountText };
-    const invalid = (message: string, status = 400) =>
-      renderInvoices(c, session, competence, {
-        banner: { kind: 'error', text: message },
-        status,
+    const attempt = {
+      idempotencyKey: fields.key,
+      etag: fields.etag,
+      amountText: text(form, 'amount') ?? '',
+    };
+    const doc = await readDocumentForm(form, {
+      amount: 'Valor total da NF',
+      file: 'arquivo da NF',
+      fallbackName: 'nota-fiscal',
+    });
+    if (!doc.ok) {
+      return renderInvoices(c, session, competence, {
+        banner: { kind: 'error', text: doc.message },
+        status: doc.status,
         retry: attempt,
       });
-    const declaredTotalCents = parseBrlToCents(amountText);
-    const file = form.file;
-    if (declaredTotalCents === null)
-      return invalid('Valor total da NF inválido. Use o formato 1.234,56.');
-    if (!(file instanceof File) || file.size === 0) return invalid('Selecione o arquivo da NF.');
-    if (file.size > DOCUMENT_MAX_BYTES) return invalid('Arquivo acima de 5 MB.', 413);
+    }
     try {
       await submitInvoice(
         deps.print,
-        {
-          competence,
-          declaredTotalCents,
-          file: {
-            filename: file.name || 'nota-fiscal',
-            bytes: new Uint8Array(await file.arrayBuffer()),
-          },
-        },
+        { competence, declaredTotalCents: doc.amountCents, file: doc.upload },
         { ifMatch: fields.etag, idempotencyKey: fields.key },
       );
     } catch (error) {
-      if (error instanceof UpstreamUnavailableError) {
-        return renderInvoices(c, session, competence, {
-          banner: UNAVAILABLE,
-          status: 503,
-          retry: attempt,
-        });
-      }
-      if (error instanceof UpstreamRejectedError) {
-        // Upstream releases the key of a refused command, so it may be reused
-        // — except after a conflict, where it is bound to another intent.
-        const retry =
-          error.code === 'IDEMPOTENCY_CONFLICT'
-            ? { ...attempt, idempotencyKey: randomUUID() }
-            : attempt;
-        return renderInvoices(c, session, competence, {
-          banner: rejectionBanner(error),
-          status: error.status,
-          retry,
-        });
-      }
-      throw error;
+      if (!isUpstreamError(error)) throw error;
+      return renderInvoices(c, session, competence, retryAfterFailure(error, attempt));
     }
     return c.redirect(`/invoices?competence=${competence}&ok=invoice`, 303);
   });

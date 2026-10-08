@@ -227,32 +227,39 @@ function hiddenCommon(view: OrderView): Html {
   <input type="hidden" name="etag" value="${view.form.etag}">`;
 }
 
-function orderAction(view: OrderView): Html | string {
-  const { order } = view;
-  const base = `/orders/${encodeURIComponent(order.id)}`;
+function quoteBlock(order: Order): Html | string {
   const quote = order.currentQuote;
-  const quoteBlock = quote
-    ? html`<div class="quote">
+  if (!quote) return '';
+  const href = `/api/print/v1/orders/${encodeURIComponent(order.id)}/quotes/${encodeURIComponent(quote.id)}/file`;
+  const rejected =
+    quote.decision === 'rejected' && quote.rejectionReason
+      ? html`<p class="banner error">Orçamento rejeitado. Motivo: ${quote.rejectionReason}</p>`
+      : '';
+  return html`<div class="quote">
   <h3>Orçamento ${quote.revision}</h3>
   <p>Valor: <strong>${formatCents(quote.amountCents)}</strong> · enviado em ${dateTime(quote.submittedAt)}</p>
-  ${quote.decision === 'rejected' && quote.rejectionReason ? html`<p class="banner error">Orçamento rejeitado. Motivo: ${quote.rejectionReason}</p>` : ''}
-  ${fileLine(`/api/print/v1${base}/quotes/${encodeURIComponent(quote.id)}/file`, quote.document, 'Baixar orçamento')}
-</div>`
-    : '';
+  ${rejected}
+  ${fileLine(href, quote.document, 'Baixar orçamento')}
+</div>`;
+}
 
-  switch (availableAction(order)) {
-    case 'collect':
-      return html`<form method="post" action="${base}/collected" class="action" data-confirm="confirm-collect">
+function collectForm(view: OrderView, base: string): Html {
+  const { order } = view;
+  return html`<form method="post" action="${base}/collected" class="action" data-confirm="confirm-collect">
   ${hiddenCommon(view)}
   <input type="hidden" name="revision" value="${order.revision}">
   <label class="check"><input type="checkbox" name="checked" value="1" required> Conferi todos os arquivos desta revisão</label>
   <button type="submit">Arquivos retirados</button>
   ${confirmDialog('confirm-collect', `Confirmar a retirada dos arquivos da revisão ${order.revision}?`, 'Confirmar retirada')}
 </form>`;
-    case 'quote':
-      return html`${quoteBlock}
+}
+
+function quoteForm(view: OrderView, base: string): Html {
+  const { order } = view;
+  const label = order.status === 'quote_rejected' ? 'Enviar novo orçamento' : 'Enviar orçamento';
+  return html`${quoteBlock(order)}
 <form method="post" action="${base}/quotes" enctype="multipart/form-data" class="action" data-confirm="confirm-quote">
-  <h3>${order.status === 'quote_rejected' ? 'Enviar novo orçamento' : 'Enviar orçamento'}</h3>
+  <h3>${label}</h3>
   ${hiddenCommon(view)}
   <input type="hidden" name="orderRevision" value="${order.revision}">
   <label for="amount">Valor do orçamento</label>
@@ -260,30 +267,55 @@ function orderAction(view: OrderView): Html | string {
   <label for="quote-file">Arquivo do orçamento</label>
   <input id="quote-file" name="file" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required>
   <p class="hint">PDF, JPEG, PNG ou WebP, até 5 MB.</p>
-  <button type="submit">${order.status === 'quote_rejected' ? 'Enviar novo orçamento' : 'Enviar orçamento'}</button>
+  <button type="submit">${label}</button>
   ${confirmDialog('confirm-quote', 'Confirmar o envio do orçamento ao Financeiro?', 'Confirmar envio')}
 </form>`;
-    case 'print':
-      return html`${quoteBlock}
-<p class="banner success">Orçamento aprovado${order.approvedAmountCents !== null ? html`: <strong>${formatCents(order.approvedAmountCents)}</strong>` : ''}.</p>
+}
+
+function printForm(view: OrderView, base: string): Html {
+  const { order } = view;
+  const amount =
+    order.approvedAmountCents !== null
+      ? html`: <strong>${formatCents(order.approvedAmountCents)}</strong>`
+      : '';
+  return html`${quoteBlock(order)}
+<p class="banner success">Orçamento aprovado${amount}.</p>
 <form method="post" action="${base}/printed" class="action" data-confirm="confirm-print">
   ${hiddenCommon(view)}
   <input type="hidden" name="revision" value="${order.revision}">
-  <input type="hidden" name="quoteId" value="${quote?.id ?? ''}">
+  <input type="hidden" name="quoteId" value="${order.currentQuote?.id ?? ''}">
   <button type="submit">Marcar como impresso</button>
   ${confirmDialog('confirm-print', 'Confirmar que este pedido foi impresso?', 'Confirmar impressão')}
 </form>`;
+}
+
+/** Read-only status line when the print shop has nothing to do. */
+function statusNote(order: Order): Html | string {
+  switch (order.status) {
+    case 'quote_pending':
+      return html`${quoteBlock(order)}<p class="banner info">Aguardando aprovação do Financeiro.</p>`;
+    case 'printed':
+      return html`${quoteBlock(order)}<p class="banner success">Impresso em ${dateTime(order.printedAt)}.</p>`;
+    case 'cancelled': {
+      const reason = order.cancellationReason ? html`. Motivo: ${order.cancellationReason}` : '';
+      return html`<p class="banner error">Pedido cancelado${reason}.</p>`;
+    }
     default:
-      if (order.status === 'quote_pending') {
-        return html`${quoteBlock}<p class="banner info">Aguardando aprovação do Financeiro.</p>`;
-      }
-      if (order.status === 'printed') {
-        return html`${quoteBlock}<p class="banner success">Impresso em ${dateTime(order.printedAt)}.</p>`;
-      }
-      if (order.status === 'cancelled') {
-        return html`<p class="banner error">Pedido cancelado${order.cancellationReason ? html`. Motivo: ${order.cancellationReason}` : ''}.</p>`;
-      }
-      return quoteBlock;
+      return quoteBlock(order);
+  }
+}
+
+function orderAction(view: OrderView): Html | string {
+  const base = `/orders/${encodeURIComponent(view.order.id)}`;
+  switch (availableAction(view.order)) {
+    case 'collect':
+      return collectForm(view, base);
+    case 'quote':
+      return quoteForm(view, base);
+    case 'print':
+      return printForm(view, base);
+    default:
+      return statusNote(view.order);
   }
 }
 
@@ -356,45 +388,55 @@ function lastDayLabel(competence: string): string {
   return `${String(last).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
 }
 
-export function invoicesPage(view: InvoicesView): Html {
-  const { close, competence } = view;
-  const api = `/api/print/v1/monthly-closes/${encodeURIComponent(competence)}`;
-  let content: Html | string;
-  if (view.unavailable === 'not_deployed') {
-    content = html`<p class="empty" data-state="unavailable">Notas fiscais ainda indisponíveis.</p>`;
-  } else if (!close) {
-    content = html`<p class="empty unavailable" data-state="unavailable">Não foi possível consultar o fechamento agora (serviço indisponível). Tente novamente.</p>`;
-  } else {
-    const divergent =
-      close.declaredTotalCents !== null && close.declaredTotalCents !== close.expectedTotalCents;
-    content = html`<dl class="facts">
+function closeFacts(close: MonthlyClose): Html {
+  const declared = close.declaredTotalCents;
+  const divergent = declared !== null && declared !== close.expectedTotalCents;
+  const declaredRow =
+    declared === null
+      ? ''
+      : html`<dt>Valor declarado na NF</dt><dd${divergent ? html` class="divergent"` : ''}>${formatCents(declared)}${divergent ? ' — diverge do total calculado' : ''}</dd>`;
+  return html`<dl class="facts">
   <dt>Situação</dt><dd><span class="status close-${close.state}">${CLOSE_STATE_LABELS[close.state]}</span></dd>
   <dt>Total calculado</dt><dd><strong>${formatCents(close.expectedTotalCents)}</strong></dd>
-  ${close.declaredTotalCents !== null ? html`<dt>Valor declarado na NF</dt><dd${divergent ? html` class="divergent"` : ''}>${formatCents(close.declaredTotalCents)}${divergent ? ' — diverge do total calculado' : ''}</dd>` : ''}
+  ${declaredRow}
   ${close.submittedAt ? html`<dt>Enviada em</dt><dd>${dateTime(close.submittedAt)}</dd>` : ''}
   ${close.acceptedAt ? html`<dt>Aceita em</dt><dd>${dateTime(close.acceptedAt)}</dd>` : ''}
-</dl>
-${close.periodClosed ? '' : html`<p class="banner info">Competência em andamento: a NF só pode ser enviada depois do encerramento do mês (${lastDayLabel(competence)}).</p>`}
-${close.state === 'submitted' ? html`<p class="banner info">Aguardando conferência.</p>` : ''}
-${close.state === 'rejected' && close.rejectionReason ? html`<p class="banner error">NF rejeitada. Motivo: ${close.rejectionReason}</p>` : ''}
-${close.state === 'accepted' ? html`<p class="banner success">NF aceita pelo Financeiro.</p>` : ''}
-${close.document ? fileLine(`${api}/invoice`, close.document, 'Baixar NF') : ''}
-<h2>Pedidos da competência</h2>
-${
-  close.items.length === 0
-    ? html`<p class="empty" data-state="empty">Nenhum pedido impresso nesta competência.</p>`
-    : html`<table class="orders">
+</dl>`;
+}
+
+function closeBanners(close: MonthlyClose): Html {
+  const period = close.periodClosed
+    ? ''
+    : html`<p class="banner info">Competência em andamento: a NF só pode ser enviada depois do encerramento do mês (${lastDayLabel(close.competence)}).</p>`;
+  const byState: Record<MonthlyClose['state'], Html | string> = {
+    open: '',
+    submitted: html`<p class="banner info">Aguardando conferência.</p>`,
+    rejected: close.rejectionReason
+      ? html`<p class="banner error">NF rejeitada. Motivo: ${close.rejectionReason}</p>`
+      : '',
+    accepted: html`<p class="banner success">NF aceita pelo Financeiro.</p>`,
+  };
+  return html`${period}${byState[close.state]}`;
+}
+
+function closeItems(close: MonthlyClose): Html {
+  if (close.items.length === 0) {
+    return html`<p class="empty" data-state="empty">Nenhum pedido impresso nesta competência.</p>`;
+  }
+  return html`<table class="orders">
   <thead><tr><th>Referência</th><th>Impresso em</th><th>Valor aprovado</th></tr></thead>
   <tbody>${close.items.map(
     (i) =>
       html`<tr><td data-label="Referência"><a href="/orders/${encodeURIComponent(i.orderId)}">${i.reference}</a></td><td data-label="Impresso em">${dateTime(i.printedAt)}</td><td data-label="Valor aprovado">${formatCents(i.amountCents)}</td></tr>`,
   )}</tbody>
   <tfoot><tr><th colspan="2">Total calculado</th><td>${formatCents(close.expectedTotalCents)}</td></tr></tfoot>
-</table>`
+</table>`;
 }
-${
-  canSubmitInvoice(close) && view.form
-    ? html`<form method="post" action="/invoices/${encodeURIComponent(competence)}" enctype="multipart/form-data" class="action" data-confirm="confirm-invoice">
+
+function invoiceForm(view: InvoicesView, close: MonthlyClose): Html | string {
+  if (!view.form || !canSubmitInvoice(close)) return '';
+  const competence = close.competence;
+  return html`<form method="post" action="/invoices/${encodeURIComponent(competence)}" enctype="multipart/form-data" class="action" data-confirm="confirm-invoice">
   <h2>${close.state === 'rejected' ? 'Enviar nova NF' : 'Enviar NF'}</h2>
   <input type="hidden" name="_csrf" value="${view.csrfToken}">
   <input type="hidden" name="idempotencyKey" value="${view.form.idempotencyKey}">
@@ -406,11 +448,29 @@ ${
   <p class="hint">PDF, JPEG, PNG ou WebP, até 5 MB. O valor deve ser igual ao total calculado.</p>
   <button type="submit">Enviar NF</button>
   ${confirmDialog('confirm-invoice', `Confirmar o envio da NF de ${competence}?`, 'Confirmar envio')}
-</form>`
-    : ''
-}`;
-  }
+</form>`;
+}
 
+function closeContent(view: InvoicesView): Html {
+  const { close } = view;
+  if (view.unavailable === 'not_deployed') {
+    return html`<p class="empty" data-state="unavailable">Notas fiscais ainda indisponíveis.</p>`;
+  }
+  if (!close) {
+    return html`<p class="empty unavailable" data-state="unavailable">Não foi possível consultar o fechamento agora (serviço indisponível). Tente novamente.</p>`;
+  }
+  const api = `/api/print/v1/monthly-closes/${encodeURIComponent(close.competence)}`;
+  return html`${closeFacts(close)}
+${closeBanners(close)}
+${close.document ? fileLine(`${api}/invoice`, close.document, 'Baixar NF') : ''}
+<h2>Pedidos da competência</h2>
+${closeItems(close)}
+${invoiceForm(view, close)}`;
+}
+
+export function invoicesPage(view: InvoicesView): Html {
+  const { competence } = view;
+  const content = closeContent(view);
   return layout(
     'Notas fiscais',
     html`<section>

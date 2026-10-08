@@ -35,6 +35,7 @@
     "includes": [
       "**",
       "!**/dist",
+      "!**/dist-portal",
       "!**/node_modules",
       "!**/coverage",
       "!**/*.generated.ts",

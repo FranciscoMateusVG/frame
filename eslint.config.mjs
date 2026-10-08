@@ -14,6 +14,8 @@ import { projectStructureParser, projectStructurePlugin } from 'eslint-plugin-pr
 import { folderStructureConfig } from './folder-structure.mjs';
 
 export default [
+  // Global ignores: build output and coverage reports are never linted.
+  { ignores: ['dist/**', 'dist-portal/**', 'coverage/**'] },
   {
     files: [
       'src/**/*.{ts,mts}',
@@ -27,6 +29,7 @@ export default [
       '**/*.d.ts',
       'projectStructure.cache.json',
       'dist/**',
+      'dist-portal/**',
       'coverage/**',
       'node_modules/**',
       'tmp/**',

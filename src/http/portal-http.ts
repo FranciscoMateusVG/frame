@@ -199,3 +199,15 @@ export function relayHeader(c: PortalContext, name: string): string | undefined 
   if (!/^[\x20-\x7e]{1,200}$/.test(value)) throw new InvalidRequestError(`${name} header`);
   return value;
 }
+
+/**
+ * Drop undefined values so optional properties can be passed under
+ * `exactOptionalPropertyTypes` without a conditional spread per field.
+ */
+export function compact<T extends Record<string, unknown>>(
+  object: T,
+): { [K in keyof T]?: Exclude<T[K], undefined> } {
+  return Object.fromEntries(Object.entries(object).filter(([, v]) => v !== undefined)) as {
+    [K in keyof T]?: Exclude<T[K], undefined>;
+  };
+}

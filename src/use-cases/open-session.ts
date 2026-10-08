@@ -14,6 +14,21 @@ export interface OpenSessionResult {
   readonly expiresAt: Date | null;
 }
 
+/** First live session among `ids`; expired ones found on the way are deleted. */
+async function firstLive(
+  deps: SessionDeps,
+  ids: readonly (string | undefined)[],
+  now: Date,
+): Promise<PortalSession | undefined> {
+  for (const id of ids) {
+    const candidate = id ? await deps.sessions.get(id) : undefined;
+    if (!candidate) continue;
+    if (!isSessionExpired(candidate, deps.policy, now)) return candidate;
+    await deps.sessions.delete(candidate.id);
+  }
+  return undefined;
+}
+
 /**
  * Return the caller's first live session among `sessionIds` (session cookie
  * first, then pre-session cookie), or open an anonymous pre-session that
@@ -26,16 +41,7 @@ export function openSession(
   const { sessions, policy, clock, randomToken, observability } = deps;
   return inSpan(observability.tracer, 'openSession', {}, async (span) => {
     const now = clock();
-    let existing: PortalSession | undefined;
-    for (const id of input.sessionIds) {
-      const candidate = id ? await sessions.get(id) : undefined;
-      if (!candidate) continue;
-      if (!isSessionExpired(candidate, policy, now)) {
-        existing = candidate;
-        break;
-      }
-      await sessions.delete(candidate.id);
-    }
+    const existing = await firstLive(deps, input.sessionIds, now);
     if (existing) {
       await sessions.touch(existing.id, now);
       const touched = { ...existing, lastSeenAt: now };

@@ -22,7 +22,9 @@ export function createPortalApp(deps: PortalDeps): Hono<PortalEnv> {
     await next();
     c.header('X-Request-Id', c.get('requestId'));
     c.header('X-Content-Type-Options', 'nosniff');
-    c.header('Referrer-Policy', 'no-referrer');
+    // same-origin, not no-referrer: with no-referrer browsers send `Origin: null`
+    // on form POSTs, which the exact-Origin CSRF check (rightly) refuses.
+    c.header('Referrer-Policy', 'same-origin');
     c.header('X-Frame-Options', 'DENY');
     if (!c.res.headers.has('Cache-Control')) c.header('Cache-Control', 'no-store');
     if ((c.res.headers.get('Content-Type') ?? '').startsWith('text/html')) {
