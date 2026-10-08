@@ -67,8 +67,8 @@ impl Config {
                 .ok_or_else(|| ConfigError(format!("{name} is required")))
         };
         let password = required("PRINT_PORTAL_PASSWORD")?;
-        if password.chars().count() < 16 {
-            return fail("PRINT_PORTAL_PASSWORD must have at least 16 characters");
+        if password.chars().count() < 12 {
+            return fail("PRINT_PORTAL_PASSWORD must have at least 12 characters");
         }
         let service_token = required("INCLUIR_PRINT_SERVICE_TOKEN")?;
         if service_token == password {

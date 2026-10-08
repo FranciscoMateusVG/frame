@@ -205,7 +205,8 @@ crates/portal-web/        axum router, maud pages, JSON BFF, cookies/CSRF; `prin
 ```
 
 Run it (all configuration comes from the environment; missing or invalid
-values exit with code 2 and name the variable, never its value):
+values exit with code 2 and name the variable, never its value).
+`PRINT_PORTAL_PASSWORD` requires at least 12 characters:
 
 ```sh
 PRINT_PORTAL_PASSWORD=… INCLUIR_PRINT_SERVICE_TOKEN=… \

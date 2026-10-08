@@ -21,6 +21,22 @@ fn env(extra: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
 }
 
 #[test]
+fn rejects_an_11_character_password() {
+    let password = "p".repeat(11);
+    let error = Config::from_env(&env(&[("PRINT_PORTAL_PASSWORD", &password)])).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "PRINT_PORTAL_PASSWORD must have at least 12 characters"
+    );
+}
+
+#[test]
+fn accepts_a_12_character_password() {
+    let password = "p".repeat(12);
+    assert!(Config::from_env(&env(&[("PRINT_PORTAL_PASSWORD", &password)])).is_ok());
+}
+
+#[test]
 fn session_ttl_overrides_can_only_shorten_the_spec_maxima() {
     let config = Config::from_env(&env(&[])).unwrap();
     assert_eq!(config.session.idle.num_seconds(), 1800);
@@ -60,7 +76,7 @@ fn configuration_errors_name_the_variable_never_the_value() {
     for (vars, name) in [
         (vec![("PRINT_PORTAL_PASSWORD", "")], "PRINT_PORTAL_PASSWORD"),
         (
-            vec![("PRINT_PORTAL_PASSWORD", "curta-demais")],
+            vec![("PRINT_PORTAL_PASSWORD", "curta")],
             "PRINT_PORTAL_PASSWORD",
         ),
         (
