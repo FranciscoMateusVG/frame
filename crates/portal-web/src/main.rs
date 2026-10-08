@@ -8,6 +8,10 @@ use std::{process::ExitCode, sync::Arc};
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Panic payloads may carry request data: report only that one happened.
+    std::panic::set_hook(frame_portal_web::panic_hook(Box::new(|line| {
+        eprint!("{line}");
+    })));
     let config = match Config::from_env(&|name| std::env::var(name).ok()) {
         Ok(config) => config,
         Err(error) => {

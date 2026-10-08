@@ -854,6 +854,7 @@ dependencies = [
  "frame-portal-hono",
  "frame-portal-port",
  "frame-portal-use-cases",
+ "futures-util",
  "getrandom 0.3.4",
  "http-body",
  "maud",

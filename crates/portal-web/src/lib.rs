@@ -73,6 +73,50 @@ async fn context(mut request: Request, next: Next) -> Response {
     response
 }
 
+/// A panic anywhere below becomes a sanitized 500 (JSON on `/api`, a plain
+/// page elsewhere) instead of a reset connection. The payload is never
+/// logged or returned; the server keeps serving.
+async fn catch_panic(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
+    use futures_util::FutureExt;
+    let api = request.uri().path().starts_with("/api/");
+    let rid = request
+        .extensions()
+        .get::<RequestId>()
+        .cloned()
+        .unwrap_or_else(|| RequestId(String::new()));
+    match std::panic::AssertUnwindSafe(next.run(request))
+        .catch_unwind()
+        .await
+    {
+        Ok(response) => response,
+        Err(_payload) => {
+            let mut attrs = frame_observability::LogAttributes::new();
+            attrs.insert("requestId".into(), rid.0.clone().into());
+            state
+                .observability
+                .logger
+                .error("portal.internal_error", Some(&attrs));
+            if api {
+                api::error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL",
+                    "Erro interno.",
+                    &rid,
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    maud::html! {
+                        (maud::DOCTYPE)
+                        html lang="pt-BR" { body { h1 { "Erro interno" } p { "Tente novamente em instantes." } a href="/orders" { "Ir para Pedidos" } } }
+                    },
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
 async fn healthz() -> Response {
     axum::Json(json!({"status": "ok"})).into_response()
 }
@@ -123,6 +167,7 @@ pub fn app(
         .route("/readyz", get(readyz))
         .merge(api::routes())
         .fallback(pages::fallback)
+        .layer(middleware::from_fn_with_state(state.clone(), catch_panic))
         .layer(middleware::from_fn(context))
         .with_state(state)
 }
@@ -205,4 +250,20 @@ impl Drop for Server {
             task.abort();
         }
     }
+}
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
+
+/// Process panic hook for `print-portal`: reports that an internal error
+/// happened and where, never the panic payload (it may carry request data).
+pub fn panic_hook(sink: Box<dyn Fn(&str) + Send + Sync>) -> PanicHook {
+    Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown".into());
+        sink(&format!(
+            "print-portal: internal error at {location} (details suppressed)\n"
+        ));
+    })
 }

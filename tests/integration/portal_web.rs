@@ -1349,3 +1349,154 @@ async fn a_truncated_upstream_file_never_reaches_the_browser_as_complete() {
     );
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_panicking_handler_answers_a_sanitized_500_and_leaks_nothing() {
+    const MARKER: &str = "MARKER-rust-crash-detail-99173";
+    struct Exploding;
+    #[async_trait::async_trait]
+    impl PrintApi for Exploding {
+        async fn list_orders(
+            &self,
+            _: &frame_portal_port::ListQuery,
+        ) -> frame_portal_port::ApiResult<frame_portal_domain::OrderList> {
+            panic!("{MARKER} token=secret")
+        }
+        async fn get_order(
+            &self,
+            _: &str,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Tagged<frame_portal_domain::Order>>
+        {
+            panic!("{MARKER}")
+        }
+        async fn order_file(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Download> {
+            panic!("{MARKER}")
+        }
+        async fn collect(
+            &self,
+            _: &str,
+            _: u64,
+            _: &frame_portal_port::Preconditions,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Command<frame_portal_domain::Order>>
+        {
+            panic!("{MARKER}")
+        }
+        async fn submit_quote(
+            &self,
+            _: &str,
+            _: i64,
+            _: u64,
+            _: frame_portal_port::Upload,
+            _: &frame_portal_port::Preconditions,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Command<frame_portal_domain::Order>>
+        {
+            panic!("{MARKER}")
+        }
+        async fn quote_file(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Download> {
+            panic!("{MARKER}")
+        }
+        async fn mark_printed(
+            &self,
+            _: &str,
+            _: u64,
+            _: &str,
+            _: &frame_portal_port::Preconditions,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Command<frame_portal_domain::Order>>
+        {
+            panic!("{MARKER}")
+        }
+        async fn get_close(
+            &self,
+            _: Competence,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Tagged<frame_portal_domain::Close>>
+        {
+            panic!("{MARKER}")
+        }
+        async fn submit_invoice(
+            &self,
+            _: Competence,
+            _: i64,
+            _: frame_portal_port::Upload,
+            _: &frame_portal_port::Preconditions,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Command<frame_portal_domain::Close>>
+        {
+            panic!("{MARKER}")
+        }
+        async fn invoice_file(
+            &self,
+            _: Competence,
+        ) -> frame_portal_port::ApiResult<frame_portal_port::Download> {
+            panic!("{MARKER}")
+        }
+    }
+    let obs = frame_testing::TestObservability::new();
+    let logger = Arc::new(CapturingLogger::default());
+    let observability = Observability {
+        logger: logger.clone(),
+        tracer: opentelemetry::global::tracer("frame-test"),
+    };
+    // The production hook (installed by `print-portal`) with a captured sink.
+    let hook_output = Arc::new(std::sync::Mutex::new(String::new()));
+    let sink = hook_output.clone();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(frame_portal_web::panic_hook(Box::new(move |line: &str| {
+        sink.lock().unwrap().push_str(line);
+    })));
+    let clock = TestClock::at(2026, 10, 8);
+    let server = start_portal(Arc::new(Exploding), clock.as_fn(), observability, |_| {}).await;
+    let b = Browser::new(&server.base_url);
+    assert_eq!(b.login(PASSWORD).await.0, 200);
+    let api = b.send(b.request(Method::GET, "/api/print/v1/orders")).await;
+    assert_eq!(api.status(), 500);
+    let body: Value = api
+        .json()
+        .await
+        .expect("a complete JSON response, not a reset");
+    assert_eq!(body["error"]["code"], "INTERNAL");
+    let page = b.send(b.request(Method::GET, "/orders")).await;
+    assert_eq!(page.status(), 500);
+    let page = page.text().await.unwrap();
+    // The server keeps serving after the panics.
+    assert_eq!(
+        b.send(b.request(Method::GET, "/healthz")).await.status(),
+        200
+    );
+    std::panic::set_hook(previous);
+    server.shutdown().await;
+
+    let hook = hook_output.lock().unwrap().clone();
+    assert!(hook.contains("print-portal: internal error"), "{hook}");
+    let telemetry: Vec<String> = obs
+        .get_spans()
+        .iter()
+        .map(|s| {
+            format!(
+                "{} {:?} {:?} {:?}",
+                s.name, s.attributes, s.events, s.status
+            )
+        })
+        .chain(logger.0.lock().unwrap().iter().cloned())
+        .collect();
+    assert!(
+        telemetry
+            .iter()
+            .any(|l| l.contains("portal.internal_error"))
+    );
+    for text in [body.to_string(), page, hook]
+        .iter()
+        .chain(telemetry.iter())
+    {
+        assert!(
+            !text.contains(MARKER) && !text.contains("token=secret"),
+            "leaked: {text}"
+        );
+    }
+}

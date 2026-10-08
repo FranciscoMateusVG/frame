@@ -125,6 +125,7 @@ fn allowed(name: &str) -> &[&str] {
             "uuid",
             "bytes",
             "http-body",
+            "futures-util",
         ],
         _ => &[],
     }
