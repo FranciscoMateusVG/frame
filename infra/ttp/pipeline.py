@@ -151,6 +151,9 @@ def run(stage):
     try:
         if stage in COMMANDS[ctx["variant"]]:
             cmd = COMMANDS[ctx["variant"]][stage]
+            if ctx["variant"] == "rust":
+                os.environ["RUSTC"] = str(Path.home() / ".cargo/bin/rustc")
+                os.environ["RUSTDOC"] = str(Path.home() / ".cargo/bin/rustdoc")
             result, seen = execute(["nice", "-n", "10", "bash", "-eo", "pipefail", "-c", cmd])
             contention = bool(seen)
         elif stage == "image-build":
