@@ -329,7 +329,7 @@ defmodule Frame.Web.OrderLive do
           <div>
             <dt>Revisão</dt><dd>{@order["revision"]}</dd>
           </div>
-          <div>
+          <div :if={!@order["generalInstructions"]}>
             <dt>Cópias no total</dt><dd>{Order.total_copies(@order)}</dd>
           </div>
           <div>
@@ -373,7 +373,22 @@ defmodule Frame.Web.OrderLive do
         <.notice notice={@notice} />
       <% end %>
 
-      <section class="jobs" aria-labelledby="jobs-title">
+      <section
+        :if={@order["generalInstructions"]}
+        id="general-instructions"
+        aria-labelledby="general-title"
+      >
+        <h2 id="general-title">Instruções gerais</h2>
+        <p>Instruções do pedido inteiro, sem vínculo individual com os arquivos.</p>
+        <pre class="general-instructions__text">{@order["generalInstructions"]["text"]}</pre>
+        <ul>
+          <li :for={file <- @order["generalInstructions"]["files"]}>
+            <span>{file["name"]}</span>
+            <a href={"/api/print/v1/orders/#{@order["id"]}/files/#{file["id"]}"}>Baixar arquivo</a>
+          </li>
+        </ul>
+      </section>
+      <section :if={!@order["generalInstructions"]} class="jobs" aria-labelledby="jobs-title">
         <h2 id="jobs-title">Arquivos e instruções da revisão {@order["revision"]}</h2>
         <ul class="jobs__list">
           <li :for={job <- @order["jobs"]} class="job">
@@ -428,7 +443,9 @@ defmodule Frame.Web.OrderLive do
       title="Confirmar retirada"
       ok="Confirmar retirada"
     >
-      Você confirma que retirou os {length(@order["jobs"])} arquivos da revisão {@order["revision"]} de {@order[
+      Você confirma que retirou os {length(@order["generalInstructions"]["files"] || @order["jobs"])} arquivos da revisão {@order[
+        "revision"
+      ]} de {@order[
         "reference"
       ]}?
     </.confirm>

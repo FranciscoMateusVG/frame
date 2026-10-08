@@ -646,7 +646,9 @@ defmodule Frame.Adapters.PrintApi.Memory do
 
   defp blob_for(state, {:order_file, order_id, file_id}) do
     with %{} = order <- find(state, order_id),
-         true <- Enum.any?(order["jobs"], &(&1["file"]["id"] == file_id)) do
+         files =
+           get_in(order, ["generalInstructions", "files"]) || Enum.map(order["jobs"], & &1["file"]),
+         true <- Enum.any?(files, &(&1["id"] == file_id)) do
       state.blobs[file_id]
     else
       _ -> nil

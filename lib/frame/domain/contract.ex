@@ -86,9 +86,11 @@ defmodule Frame.Domain.Contract do
   defp spec(:order_summary), do: {:object, summary_fields()}
 
   defp spec(:order) do
-    {:object,
+    {:order,
      Map.merge(summary_fields(), %{
-       "jobs" => {:nonempty_array, spec(:print_job)},
+       "jobs" => {:array, spec(:print_job)},
+       "generalInstructions" =>
+         {:optional, {:object, %{"text" => :string, "files" => {:nonempty_array, spec(:file)}}}},
        "currentQuote" => {:nullable, spec(:quote)},
        "cancellationReason" => {:nullable, :string}
      })}
@@ -140,11 +142,25 @@ defmodule Frame.Domain.Contract do
 
   # --- checker: returns a list of problems (paths only, never values) ---
 
+  defp check({:order, fields}, %{} = value, path) when not is_struct(value) do
+    mode_errors =
+      case {Map.has_key?(value, "generalInstructions"), value["jobs"]} do
+        {true, []} -> []
+        {false, [_ | _]} -> []
+        _ -> ["#{path}.jobs: incompatible instruction mode"]
+      end
+
+    check({:object, fields}, value, path) ++ mode_errors
+  end
+
   defp check({:object, fields}, %{} = value, path) when not is_struct(value) do
     extra = for key <- Map.keys(value), not Map.has_key?(fields, key), do: "#{path}.#{key}: extra"
 
     missing =
-      for {key, _} <- fields, not Map.has_key?(value, key), do: "#{path}.#{key}: missing"
+      for {key, field_spec} <- fields,
+          not match?({:optional, _}, field_spec),
+          not Map.has_key?(value, key),
+          do: "#{path}.#{key}: missing"
 
     nested =
       for {key, field_spec} <- fields,
@@ -154,6 +170,8 @@ defmodule Frame.Domain.Contract do
 
     extra ++ missing ++ nested
   end
+
+  defp check({:optional, inner}, value, path), do: check(inner, value, path)
 
   defp check({:nullable, _inner}, nil, _path), do: []
   defp check({:nullable, inner}, value, path), do: check(inner, value, path)

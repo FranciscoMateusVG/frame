@@ -259,3 +259,6 @@ input[type="file"] { font: inherit; padding: 0.4rem 0; max-width: 100%; }
 @media (prefers-reduced-motion: reduce) {
   .confirm--inline { animation: none; }
 }
+
+/* Legacy text stays complete, escaped, and readable on narrow screens. */
+.general-instructions__text { white-space: pre-wrap; overflow-wrap: anywhere; }
