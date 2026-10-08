@@ -15,3 +15,7 @@ coverage
 *.profdata
 *.md
 docker
+
+# CI timing records are not image inputs
+.ttp
+**/__pycache__
