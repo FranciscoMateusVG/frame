@@ -347,6 +347,19 @@ fn order_view(order: &Order, etag: &str) -> Markup {
         }
         section.card {
             h2 { "Arquivos e instruções (revisão " (order.revision) ")" }
+            @if let Some(general) = &order.general_instructions {
+                section #general-instructions {
+                    h2 { "Instruções gerais" }
+                    p { "Estas instruções se aplicam ao pedido completo, sem vínculo por arquivo." }
+                    p.instructions { (general.text) }
+                    @for file in &general.files {
+                        p { (file.name) " · " (size(file.bytes)) }
+                        @if order.status != OrderStatus::Cancelled {
+                            a.button.secondary href={"/api/print/v1/orders/" (order.id) "/files/" (file.id)} download { "Baixar arquivo" }
+                        }
+                    }
+                }
+            }
             @for job in &order.jobs {
                 article.job {
                     h3 { (job.title) }

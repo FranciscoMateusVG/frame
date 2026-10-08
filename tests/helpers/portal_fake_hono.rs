@@ -188,7 +188,21 @@ async fn list(
 async fn order(State(up): S, headers: HeaderMap, Path(id): Path<String>) -> Response {
     guard!(up, headers);
     match up.api.get_order(&id).await {
-        Ok(t) => tagged("order", t.body, &t.etag),
+        Ok(t) => {
+            let mut body = serde_json::to_value(t.body).unwrap();
+            if up.faults.mode.load(Ordering::SeqCst) == 4 {
+                let files: Vec<Value> = body["jobs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|j| j["file"].clone())
+                    .collect();
+                body["generalInstructions"] =
+                    json!({"text":"Texto integral\n<script>alert(1)</script>", "files":files});
+                body["jobs"] = json!([]);
+            }
+            tagged("order", body, &t.etag)
+        }
         Err(e) => api_error(e),
     }
 }

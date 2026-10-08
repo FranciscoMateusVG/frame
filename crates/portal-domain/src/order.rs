@@ -152,6 +152,21 @@ pub struct OrderSummary {
     pub approved_amount_cents: Option<i64>,
 }
 
+/// Legacy instructions are request-wide; files have no invented per-file job.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GeneralInstructions {
+    pub text: String,
+    pub files: Vec<FileRef>,
+}
+
+// Missing is optional; explicit null is not a valid general-instruction object.
+fn present_general<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Box<GeneralInstructions>>, D::Error> {
+    GeneralInstructions::deserialize(d).map(Box::new).map(Some)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Order {
@@ -166,6 +181,12 @@ pub struct Order {
     pub printed_at: Option<Instant>,
     pub approved_amount_cents: Option<i64>,
     pub jobs: Vec<PrintJob>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_general"
+    )]
+    pub general_instructions: Option<Box<GeneralInstructions>>,
     pub current_quote: Option<Quote>,
     pub cancellation_reason: Option<String>,
 }
@@ -315,7 +336,13 @@ impl Validate for OrderSummary {
 impl Validate for Order {
     fn validate(&self) -> Result<(), &'static str> {
         self.summary().validate()?;
-        check(!self.jobs.is_empty(), "order.jobs")?;
+        if let Some(general) = &self.general_instructions {
+            check(self.jobs.is_empty(), "order.jobs")?;
+            check(!general.files.is_empty(), "order.generalInstructions.files")?;
+            general.files.iter().try_for_each(Validate::validate)?;
+        } else {
+            check(!self.jobs.is_empty(), "order.jobs")?;
+        }
         for job in &self.jobs {
             job.validate()?;
         }

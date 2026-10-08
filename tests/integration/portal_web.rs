@@ -1500,3 +1500,36 @@ async fn a_panicking_handler_answers_a_sanitized_500_and_leaks_nothing() {
         );
     }
 }
+
+#[tokio::test]
+async fn legacy_general_instructions_cross_http_and_render_with_all_downloads() {
+    let s = stack(Observability::default(), Timeouts::default()).await;
+    let id = seed_p1(&s.fake);
+    let original = s.fake.get_order(&id).await.unwrap().body;
+    s.upstream
+        .faults
+        .mode
+        .store(4, std::sync::atomic::Ordering::SeqCst);
+    let response = s
+        .browser
+        .send(s.browser.request(Method::GET, &format!("/orders/{id}")))
+        .await;
+    assert_eq!(response.status(), 200);
+    let html = response.text().await.unwrap();
+    assert!(html.contains("Instruções gerais") && html.contains("Texto integral"));
+    assert!(html.contains("&lt;script&gt;") && !html.contains("<script>alert(1)</script>"));
+    assert!(!html.contains("Cópias:"));
+    for job in original.jobs {
+        assert!(html.contains(&job.file.name));
+        let response = s
+            .browser
+            .send(s.browser.request(
+                Method::GET,
+                &format!("/api/print/v1/orders/{id}/files/{}", job.file.id),
+            ))
+            .await;
+        assert_eq!(response.status(), 200);
+        assert_eq!(sha(&response.bytes().await.unwrap()), job.file.sha256);
+    }
+    s.server.shutdown().await;
+}
