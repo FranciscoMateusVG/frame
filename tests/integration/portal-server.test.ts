@@ -303,6 +303,19 @@ describe('portal process (src/http/server.ts)', () => {
     }
   }, 30_000);
 
+  it('serves an unauthenticated no-store build revision, not runtime BUILD_SHA', async () => {
+    const running = await start({ ...env(), BUILD_SHA: 'runtime-must-not-win' });
+    try {
+      const response = await fetch(`${running.base}/version`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toMatch(/^application\/json/);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(await response.json()).toEqual({ revision: 'unknown' });
+    } finally {
+      await stop(running);
+    }
+  });
+
   it('serves the journey over HTTP and a restart logs everyone out', async () => {
     const order = seedTwoFileOrder(upstream.api);
     let running = await start(env());

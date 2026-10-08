@@ -107,3 +107,19 @@ custom port 4010; UID 10001; no compiler or application node_modules; read-only
 root filesystem with all capabilities dropped; missing env exits 1. Synthetic
 runtime secrets were not present in logs. Health is liveness, not proof of an
 upstream Incluir connection. No production service or credentials were used.
+
+## Build revision
+
+`GET /version` is public and returns only `{"revision":"<sha>"}` with
+`Content-Type: application/json` and `Cache-Control: no-store`. It is compiled
+into the artifact: setting `BUILD_SHA` on the running container cannot change it.
+
+CI builds with `docker build --build-arg BUILD_SHA="$GITHUB_SHA" ...`. For Dokploy
+public clones without that argument, the build reads only `.git/HEAD`,
+`.git/refs/**`, and `.git/packed-refs` from a read-only, filtered build context.
+Git config, objects, logs, and credentials are excluded; Git metadata never enters
+the runtime image. A worktree `.git` pointer is not followed (pass the argument).
+An explicit argument conflicting with valid checkout metadata fails the build.
+Missing metadata/argument yields `unknown` for local development; malformed Git
+metadata fails closed. Staging smoke must require an exact full 40-hex SHA match
+and reject `unknown`. This proves the source revision, not the runtime image ID.

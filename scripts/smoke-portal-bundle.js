@@ -42,6 +42,7 @@ const live = run({
   PRINT_PORTAL_ORIGIN: 'https://grafica.test',
   PORT: '0',
   HOST: '127.0.0.1',
+  BUILD_SHA: 'runtime-must-not-override-the-artifact',
 });
 let port;
 for (let i = 0; i < 100 && !port; i++) {
@@ -50,6 +51,16 @@ for (let i = 0; i < 100 && !port; i++) {
 }
 try {
   if (!port) fail(`bundle did not start:\n${live.out()}`);
+  const revision = await fetch(`http://127.0.0.1:${port}/version`);
+  if (
+    revision.status !== 200 ||
+    revision.headers.get('cache-control') !== 'no-store' ||
+    !revision.headers.get('content-type')?.startsWith('application/json') ||
+    JSON.stringify(await revision.json()) !==
+      JSON.stringify({ revision: process.env.BUILD_SHA || 'unknown' })
+  )
+    fail('bundle did not preserve its build revision');
+  console.log('✅ bundle revision is baked in, public, no-store, and immune to runtime BUILD_SHA');
   const health = await fetch(`http://127.0.0.1:${port}/healthz`);
   const login = await fetch(`http://127.0.0.1:${port}/login`);
   if (health.status !== 200 || login.status !== 200)
