@@ -154,6 +154,10 @@ def run(stage):
             if ctx["variant"] == "rust":
                 os.environ["RUSTC"] = str(Path.home() / ".cargo/bin/rustc")
                 os.environ["RUSTDOC"] = str(Path.home() / ".cargo/bin/rustdoc")
+                # cargo discovers fmt/clippy as subprocesses; CARGO_HOME is an
+                # isolated cache, not the installed toolchain directory. This
+                # PATH exists only in this stage process, never a login shell.
+                os.environ["PATH"] = str(Path.home() / ".cargo/bin") + os.pathsep + os.environ["PATH"]
             result, seen = execute(["nice", "-n", "10", "bash", "-eo", "pipefail", "-c", cmd])
             contention = bool(seen)
         elif stage == "image-build":
