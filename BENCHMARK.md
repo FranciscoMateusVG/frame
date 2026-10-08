@@ -22,13 +22,13 @@ developer machine, not a controlled benchmark.
 
 | Measurement | Value |
 |---|---:|
-| clean release build of `print-portal` (empty target dir, crate cache warm) | 47.27 s (user 176.53 s) |
-| `print-portal` executable size (default release profile, no strip/LTO) | 6,202,096 bytes (5.9 MiB), Mach-O arm64 |
-| portal tests, warm artifacts (`portal_unit` 19 + `portal_integration` 13 tests, 5 of them proptests) | 2.08 s |
-| production LOC (`crates/portal-*/src/*.rs`, including the inline JS/CSS in `assets.rs`) | 5,008 |
-| test LOC (`tests/portal_*.rs` + `tests/*/portal_*.rs`, including verbatim contract fixtures) | 3,321 |
+| clean release build of `print-portal` (empty target dir, crate cache warm; measured at 9ae2323) | 47.27 s (user 176.53 s) |
+| `print-portal` executable size (default release profile, no strip/LTO; measured at 9ae2323) | 6,202,096 bytes (5.9 MiB), Mach-O arm64 |
+| portal tests, warm artifacts (`portal_unit` 19 + `portal_integration` 17 tests, 5 of them proptests; re-measured at e35b363) | 1.90 s |
+| production LOC (`crates/portal-*/src/*.rs`, including the inline JS/CSS in `assets.rs`; at e35b363) | 5,067 |
+| test LOC (`tests/portal_*.rs` + `tests/*/portal_*.rs`, including verbatim contract fixtures; at e35b363) | 3,472 |
 
-LOC per crate: portal-web 2142, portal-memory 867 (the upstream fake),
+LOC per crate: portal-web 2201, portal-memory 867 (the upstream fake),
 portal-use-cases 678, portal-domain 662, portal-hono 496, portal-port 163.
 
 Measured **2026-10-07**, on Apple M3 (8 logical CPUs), 16 GiB RAM,
