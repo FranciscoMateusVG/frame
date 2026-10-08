@@ -102,22 +102,31 @@ export function clientKey(c: PortalContext, trustedProxies: readonly string[]): 
   return peer;
 }
 
+/**
+ * The JSON error envelope. Extra headers go in the constructor: under
+ * @hono/node-server, headers set on a Response AFTER construction can be
+ * lost on the wire (its lightweight Response caches the init headers), so
+ * never mutate a Response's headers once built.
+ */
 export function jsonError(
   c: PortalContext,
   status: number,
   code: string,
   message: string,
-  requestId?: string,
+  options: { requestId?: string | undefined; retryAfterSeconds?: number | null | undefined } = {},
 ): Response {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json; charset=UTF-8',
+    'Cache-Control': 'no-store',
+  };
+  if (options.retryAfterSeconds !== undefined && options.retryAfterSeconds !== null) {
+    headers['Retry-After'] = String(options.retryAfterSeconds);
+  }
   return new Response(
-    JSON.stringify({ error: { code, message, requestId: requestId ?? c.get('requestId') } }),
-    {
-      status,
-      headers: {
-        'Content-Type': 'application/json; charset=UTF-8',
-        'Cache-Control': 'no-store',
-      },
-    },
+    JSON.stringify({
+      error: { code, message, requestId: options.requestId ?? c.get('requestId') },
+    }),
+    { status, headers },
   );
 }
 
@@ -139,21 +148,15 @@ export function errorToJson(c: PortalContext, error: unknown, logger: Logger): R
     return jsonError(c, 401, 'INVALID_CREDENTIALS', 'Senha incorreta.');
   }
   if (error instanceof LoginRateLimitedError) {
-    const res = jsonError(c, 429, 'RATE_LIMITED', 'Muitas tentativas. Tente novamente mais tarde.');
-    res.headers.set('Retry-After', String(error.retryAfterSeconds));
-    return res;
+    return jsonError(c, 429, 'RATE_LIMITED', 'Muitas tentativas. Tente novamente mais tarde.', {
+      retryAfterSeconds: error.retryAfterSeconds,
+    });
   }
   if (error instanceof UpstreamRejectedError) {
-    const res = jsonError(
-      c,
-      error.status,
-      error.code,
-      error.upstreamMessage,
-      error.requestId ?? undefined,
-    );
-    if (error.retryAfterSeconds !== null)
-      res.headers.set('Retry-After', String(error.retryAfterSeconds));
-    return res;
+    return jsonError(c, error.status, error.code, error.upstreamMessage, {
+      requestId: error.requestId ?? undefined,
+      retryAfterSeconds: error.retryAfterSeconds,
+    });
   }
   if (error instanceof UpstreamUnavailableError) {
     return jsonError(c, 503, 'UPSTREAM_UNAVAILABLE', UNAVAILABLE_MESSAGE);

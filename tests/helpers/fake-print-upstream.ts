@@ -27,6 +27,8 @@ export interface FakeUpstreamBehaviour {
   redirectTo?: string;
   /** Add an unexpected field to every JSON body (contract violation). */
   leakField?: boolean;
+  /** Answer every request with 429 RATE_LIMITED and this Retry-After (seconds). */
+  rateLimitedFor?: number;
 }
 
 export interface FakeUpstream {
@@ -107,6 +109,15 @@ export async function startFakeUpstream(
     if (behaviour.delayMs) await new Promise((r) => setTimeout(r, behaviour.delayMs));
     if (behaviour.redirectTo) return c.redirect(behaviour.redirectTo, 302);
     if (behaviour.failWith) return c.text('upstream exploded', behaviour.failWith as 500);
+    if (behaviour.rateLimitedFor) {
+      return c.json(
+        {
+          error: { code: 'RATE_LIMITED', message: 'Muitas requisições.', requestId: randomUUID() },
+        },
+        429,
+        { 'Retry-After': String(behaviour.rateLimitedFor) },
+      );
+    }
     if (c.req.header('authorization') !== `Bearer ${token}`) {
       return c.json(
         { error: { code: 'UNAUTHORIZED', message: 'Não autorizado.', requestId: randomUUID() } },

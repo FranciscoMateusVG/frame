@@ -1,7 +1,7 @@
 /**
  * Zod mirror of the FROZEN service contract
  * `apps/hono-app/docs/contracts/print-portal-v1.schema.json`
- * (monorepo-incluir PR B #1038 + PR C monthly closes, 12178459).
+ * (monorepo-incluir PR B #1038 + PR C monthly closes; verified unchanged at 19d7ea66).
  *
  * Every object is `.strict()` (= `additionalProperties: false`), so an
  * upstream field the contract does not name — a bucket, a key, an email —

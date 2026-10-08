@@ -104,6 +104,49 @@ describe('portal process (src/http/server.ts)', () => {
     expect(failure.output).not.toContain(PASSWORD);
   }, 20_000);
 
+  it('the login limiter 429 carries Retry-After through the real server', async () => {
+    const running = await start(env());
+    try {
+      const go = browser(running.base);
+      const { csrfToken } = (await (await go('/api/session')).json()) as { csrfToken: string };
+      const attempt = () =>
+        go('/api/session', {
+          method: 'POST',
+          csrf: csrfToken,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: 'definitely-wrong-password' }),
+        });
+      for (let i = 0; i < 5; i++) expect((await attempt()).status).toBe(401);
+      const limited = await attempt();
+      expect(limited.status).toBe(429);
+      expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
+    } finally {
+      await stop(running);
+    }
+  }, 30_000);
+
+  it('relays an upstream 429 with its Retry-After through the real server', async () => {
+    const running = await start(env());
+    try {
+      const go = browser(running.base);
+      const pre = (await (await go('/api/session')).json()) as { csrfToken: string };
+      const login = await go('/api/session', {
+        method: 'POST',
+        csrf: pre.csrfToken,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      expect(login.status).toBe(200);
+      upstream.behaviour.rateLimitedFor = 42;
+      const res = await go('/api/print/v1/orders');
+      expect(res.status).toBe(429);
+      expect(res.headers.get('retry-after')).toBe('42');
+    } finally {
+      upstream.behaviour.rateLimitedFor = 0;
+      await stop(running);
+    }
+  }, 30_000);
+
   it('serves the journey over HTTP and a restart logs everyone out', async () => {
     const order = seedTwoFileOrder(upstream.api);
     let running = await start(env());
