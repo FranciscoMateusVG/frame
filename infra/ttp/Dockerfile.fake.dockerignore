@@ -1,8 +1,4 @@
 .git
-.git/**
-!.git/HEAD
-!.git/refs/**
-!.git/packed-refs
 .husky
 .claude
 .env
@@ -12,14 +8,10 @@
 node_modules
 dist
 dist-portal
+dist-ttp
 coverage
 tmp
 *.md
-tests
 examples
 scripts
 docker
-
-# CI timing records are not image inputs
-.ttp
-**/__pycache__

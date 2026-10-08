@@ -1,0 +1,87 @@
+"""Real HTTP/lifecycle check of the standalone synthetic upstream bundle."""
+import json
+import os
+import secrets
+import socket
+import subprocess
+import time
+import unittest
+import urllib.error
+import urllib.request
+
+
+class FakeBoundaryTest(unittest.TestCase):
+    def test_frozen_http_and_clean_shutdown(self):
+        with socket.socket() as probe:
+            self.assertNotEqual(probe.connect_ex(("127.0.0.1", 4001)), 0, "port occupied")
+        token = "svc_" + secrets.token_hex(32)
+        env = {**os.environ, "INCLUIR_PRINT_SERVICE_TOKEN": token}
+        # Signal the actual runtime, not a Volta/fnm launcher subprocess.
+        node = subprocess.check_output(["node", "-p", "process.execPath"], text=True).strip()
+        proc = subprocess.Popen(
+            [node, "dist/ttp/fake-upstream.mjs"], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+        def request(path, authenticated=True, method="GET"):
+            req = urllib.request.Request(
+                "http://127.0.0.1:4001" + path,
+                headers={"Authorization": "Bearer " + token} if authenticated else {},
+                method=method,
+            )
+            try:
+                with opener.open(req, timeout=3) as response:
+                    return response.status, response.read()
+            except urllib.error.HTTPError as error:
+                try:
+                    return error.code, error.read()
+                finally:
+                    error.close()
+
+        try:
+            for _ in range(100):
+                try:
+                    code, body = request("/healthz", False)
+                    self.assertEqual(code, 200)
+                    self.assertEqual(json.loads(body)["delayMs"], 0)
+                    break
+                except urllib.error.URLError:
+                    self.assertIsNone(proc.poll())
+                    time.sleep(0.1)
+            else:
+                self.fail("fake startup timeout")
+            self.assertEqual(request("/api/print-portal/v1/orders", False)[0], 401)
+            code, body = request("/api/print-portal/v1/orders")
+            page = json.loads(body)
+            self.assertEqual(code, 200)
+            self.assertEqual(len(page["items"]), 1)
+            order_id = page["items"][0]["id"]
+            code, body = request("/api/print-portal/v1/orders/" + order_id)
+            self.assertEqual(code, 200)
+            self.assertEqual(len(json.loads(body)["order"]["jobs"]), 2)
+            self.assertEqual(request(
+                "/api/print-portal/v1/orders/" + order_id + "/collected", method="POST"
+            )[0], 405)
+            self.assertEqual(json.loads(request("/api/print-portal/v1/orders")[1]), page)
+            proc.terminate()
+            try:
+                out, err = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired as error:
+                captured = error.stdout or b""
+                self.fail("shutdown timeout; signal_handler_seen=" + str(
+                    b"ttp_fake_stopping" in captured
+                ))
+            self.assertEqual(proc.returncode, 0)
+            self.assertNotIn(token, out + err)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate(timeout=5)
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
