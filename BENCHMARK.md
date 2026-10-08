@@ -45,7 +45,7 @@ cache): `build:portal` 0.5 s, `test:portal` 1.9 s (111 tests), bundle smoke
   @opentelemetry/api) are inlined by tsup (`noExternal`).
 - **Runtime needs:** Node.js ≥ 20 and nothing else — **no `node_modules`**.
 - **Run:** `node dist-portal/server.mjs` with
-  `PRINT_PORTAL_PASSWORD` (≥ 16 chars), `INCLUIR_PRINT_SERVICE_TOKEN`,
+  `PRINT_PORTAL_PASSWORD` (≥ 12 chars), `INCLUIR_PRINT_SERVICE_TOKEN`,
   `INCLUIR_PRINT_API_ORIGIN`, `PRINT_PORTAL_ORIGIN`; optional `PORT`
   (default 3000), `HOST`, `PRINT_PORTAL_TRUSTED_PROXIES`,
   `PRINT_PORTAL_SESSION_IDLE_SECONDS`, `PRINT_PORTAL_SESSION_ABSOLUTE_SECONDS`.

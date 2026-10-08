@@ -7,7 +7,7 @@ import { MIN_PASSWORD_LENGTH } from '../domain/portal-session.js';
  * fallbacks). Error messages name the variable, never its value.
  */
 export interface PortalConfig {
-  /** Shared print-shop password (PRINT_PORTAL_PASSWORD, ≥ 16 chars). */
+  /** Shared print-shop password (PRINT_PORTAL_PASSWORD, ≥ 12 chars). */
   readonly password: string;
   /** Service bearer for the Incluir API (INCLUIR_PRINT_SERVICE_TOKEN). */
   readonly serviceToken: string;

@@ -42,6 +42,6 @@ export function isSessionExpired(
 }
 
 /** Minimum length of the shared print-shop password (spec §5). */
-export const MIN_PASSWORD_LENGTH = 16;
+export const MIN_PASSWORD_LENGTH = 12;
 /** Upper bound on a submitted password; longer input is a format error. */
 export const MAX_PASSWORD_LENGTH = 1024;

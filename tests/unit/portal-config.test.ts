@@ -9,6 +9,18 @@ const valid = {
 };
 
 describe('loadPortalConfig', () => {
+  it('rejects an 11-character password', () => {
+    expect(() => loadPortalConfig({ ...valid, PRINT_PORTAL_PASSWORD: 'p'.repeat(11) })).toThrow(
+      'PRINT_PORTAL_PASSWORD must have at least 12 characters',
+    );
+  });
+
+  it('accepts a 12-character password', () => {
+    expect(() =>
+      loadPortalConfig({ ...valid, PRINT_PORTAL_PASSWORD: 'p'.repeat(12) }),
+    ).not.toThrow();
+  });
+
   it('parses a complete environment with defaults', () => {
     const config = loadPortalConfig(valid);
     expect(config).toMatchObject({
