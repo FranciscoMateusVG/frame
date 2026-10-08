@@ -122,6 +122,46 @@ defmodule Frame.Integration.PortalLiveTest do
   end
 
   describe "Ver pedido" do
+    test "legacy files have general instructions, no invented pairings or copies", %{portal: p} do
+      original = Portal.seed(p)
+      files = Enum.map(original["jobs"], & &1["file"])
+      text = "Todas as instruções\n<script>não executar</script>\nSem parear por posição."
+
+      legacy =
+        original
+        |> Map.put("jobs", [])
+        |> Map.put("generalInstructions", %{"text" => text, "files" => files})
+
+      Agent.update(p.memory.agent, &put_in(&1, [:orders, original["id"]], legacy))
+      {view, html} = live_page(p, "/orders/#{original["id"]}")
+      assert html =~ "Instruções gerais"
+      assert html =~ "Todas as instruções"
+      assert html =~ "&lt;script&gt;não executar&lt;/script&gt;"
+      assert html =~ "Sem parear por posição."
+      refute html =~ "<script>não executar</script>"
+      refute html =~ "Cópias no total"
+      refute has_element?(view, ".job")
+
+      for file <- files do
+        assert has_element?(
+                 view,
+                 ~s(a[href="/api/print/v1/orders/#{original["id"]}/files/#{file["id"]}"]),
+                 "Baixar arquivo"
+               )
+
+        assert html =~ file["name"]
+        {_p, download} = Portal.get(p, "/api/print/v1/orders/#{original["id"]}/files/#{file["id"]}")
+        assert download.status == 200
+        assert Base.encode16(:crypto.hash(:sha256, download.raw), case: :lower) == file["sha256"]
+      end
+
+      view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
+      assert view |> element("#confirm-collect") |> render() =~ "os 2 arquivos"
+      view |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
+      assert order_status(p, original) == "files_collected"
+      assert has_element?(view, "#general-instructions", "Instruções gerais")
+    end
+
     test "Arquivos retirados → orçamento → aprovado → impresso", %{portal: p} do
       o = Portal.seed(p)
       {view, html} = live_page(p, "/orders/#{o["id"]}")

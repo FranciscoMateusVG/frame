@@ -50,7 +50,11 @@ defmodule Frame.Unit.ContractTest do
           {"CloseItem", hd(close["close"]["items"])}
         ] do
       schema = defs[def_name]
-      assert Enum.sort(schema["required"]) == Enum.sort(Map.keys(schema["properties"])), def_name
+      optional = if def_name == "Order", do: ["generalInstructions"], else: []
+
+      assert Enum.sort(schema["required"] ++ optional) == Enum.sort(Map.keys(schema["properties"])),
+             def_name
+
       assert Enum.sort(Map.keys(sample)) == Enum.sort(schema["required"]), def_name
     end
 
@@ -92,6 +96,27 @@ defmodule Frame.Unit.ContractTest do
 
     assert {:error, _} = Contract.validate(:order_list_response, [])
     assert {:error, _} = Contract.validate(:error_response, %{"error" => %{"code" => ""}})
+  end
+
+  test "general instructions are additive, unpaired and never weaken v2 jobs" do
+    order = fixture("print-portal-v1.fixture.json")["GET /orders/:id (ready)"]["order"]
+    files = Enum.map(order["jobs"], & &1["file"])
+    general = %{"text" => "Texto integral\n<script>não executar</script>", "files" => files}
+    legacy = order |> Map.put("jobs", []) |> Map.put("generalInstructions", general)
+    assert Contract.validate(:order_response, %{"order" => legacy}) == :ok
+    assert Contract.validate(:order_response, %{"order" => order}) == :ok
+
+    for bad <- [
+          Map.put(legacy, "jobs", order["jobs"]),
+          Map.delete(legacy, "generalInstructions"),
+          Map.put(legacy, "generalInstructions", nil),
+          put_in(legacy, ["generalInstructions", "files"], []),
+          put_in(legacy, ["generalInstructions", "text"], 7),
+          put_in(legacy, ["generalInstructions", "files"], [%{"id" => "missing metadata"}]),
+          put_in(legacy, ["generalInstructions", "extra"], "must reject")
+        ] do
+      assert {:error, _} = Contract.validate(:order_response, %{"order" => bad})
+    end
   end
 
   test "bodies produced by the in-memory fake satisfy the contract" do
