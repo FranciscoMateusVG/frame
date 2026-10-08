@@ -1,6 +1,6 @@
 # Portal da gráfica (Elixir)
 
-The print shop's portal for Programa Incluir: a BFF plus server-rendered HTML.
+The print shop's portal for Programa Incluir: a BFF plus LiveView pages.
 The supplier signs in with the shared password, sees approved print orders,
 downloads the files with their instructions, confirms collection, sends a
 quote, prints once Financeiro approves it, and sends the monthly NF.
@@ -15,9 +15,10 @@ implementation that runs in production.
   monorepo-incluir PR B (orders) and PR C (monthly closes).
 - **No database, no object storage.** Sessions and login limits are
   in-memory, single replica (§5). A restart signs everyone out by design.
-- **Stack:** Plug + Bandit, Finch (HTTP client, never follows redirects),
-  EEx with an auto-escaping engine, Elixir's built-in `JSON`, and the
-  OpenTelemetry API.
+- **Stack:** Phoenix + LiveView on Bandit, Finch (HTTP client, never
+  follows redirects), Elixir's built-in `JSON`, and the OpenTelemetry API.
+  No asset build: Phoenix/LiveView JS come from their packages, plus
+  `priv/static/app.{css,js}`.
 
 ## Run it
 
@@ -50,9 +51,15 @@ The release refuses to start if any value is missing or invalid; see
 
 ## Routes
 
-HTML: `/login`, `/orders`, `/orders/:id`, `/invoices`, plus the form posts
-behind their buttons. `/healthz` is liveness and `/readyz` checks that the
-upstream accepts the token.
+HTML: `/login` and `/logout` (controllers: they set and drop the cookies),
+and the LiveViews `/orders`, `/orders/:id`, `/invoices`. Their commands
+(collect, quote, print, NF) run over the LiveView socket through the same
+use cases as the JSON API, with a server-side Idempotency-Key per intent and
+the If-Match of the order on screen; quote/NF files are LiveView uploads
+(5 MB cap). The socket accepts only the exact `PRINT_PORTAL_ORIGIN`, needs
+the page's masked CSRF token and re-checks the server session on every
+event. `/healthz` is liveness and `/readyz` checks that the upstream accepts
+the token.
 
 JSON (identical across the three portals):
 
@@ -76,16 +83,22 @@ lib/frame/
 │   ├── print_api.ex          → print_api/http.ex (Finch), print_api/memory.ex (fake Hono)
 │   ├── session_store.ex      → session_store/memory.ex (ETS, bounded)
 │   └── login_limiter.ex      → login_limiter/memory.ex
-├── http/            the Plug edge: Router, Api (JSON), Pages (HTML), Security,
-│                    Multipart (strict), Reply, Views + templates/, HtmlEngine
+├── web.ex           `use Frame.Web, :controller | :live_view | :html`
+├── web/             the Phoenix edge: Endpoint (+ OriginGuard), Edge (span, access
+│                    log, headers, assets, rescue), Router, controllers/ (Session,
+│                    Print, Login, Health, Fallback), live/ (Orders, Order,
+│                    Invoices), LiveAuth, SessionCookieStore, BrowserSession,
+│                    Security, Multipart (strict), Reply, Intent, Components,
+│                    Layouts, LiveTelemetry
 ├── errors/          PortalError
-└── observability/   Logger port + Console/Noop/Otel loggers, Tracer
+└── observability/   Logger port + Console/Noop/Otel loggers, Tracer, CrashReports
+                     (crash reports reduced to the exception type)
 ```
 
 `mix frame.depcruise` enforces these rules:
 - `domain/` depends on nothing else.
-- Use cases and the HTTP edge never depend on concrete adapters.
-- Nothing below the edge depends on `http/`.
+- Use cases and the web edge never depend on concrete adapters.
+- Nothing below the edge depends on `web/`, Phoenix or LiveView.
 - Production code uses only the OTel API, never the SDK.
 - No cycles.
 
@@ -100,14 +113,30 @@ All tests go through real boundaries:
   `FakeHono` (a Bandit server backed by the fake). The HTTP-only cases cover
   redirects, timeouts, oversized and off-contract bodies, and truncated
   downloads.
-- `portal_api_test.exs` and `portal_pages_test.exs` are black-box tests of
-  the whole portal over HTTP: sessions, cookie flags, CSRF/Origin, rate
-  limit, trusted XFF, TTLs, the full journey, idempotent replay, 412/409,
-  upload limits, and 503 mapping.
+- The portal tests are the Phoenix way — `Phoenix.ConnTest` and
+  `Phoenix.LiveViewTest`, `async: true` — on **one shared setup**
+  (`test_helper.exs`: one FakeHono listener, Finch, PubSub, the endpoint).
+  Each test gets its own world (`Frame.Test.Portal.start/1`: a FakeHono
+  tenant with its own token and in-memory upstream, its own session store
+  and limiter), passed to the endpoint per conn, so nothing is shared
+  between tests while the portal still talks to the upstream through the
+  real HTTP adapter over a real socket.
+  - `portal_api_test.exs`: the JSON API (sessions, cookie flags,
+    CSRF/Origin, rate limit, trusted XFF, TTLs, the full journey,
+    idempotent replay, 412/409, upload limits, 503 mapping).
+  - `portal_live_test.exs`: every page flow (filters, pagination, the
+    confirmations, uploads via `file_input`/`render_upload`, stale pages,
+    silence + Repetir with the same key, session revoked or expired in the
+    middle of a live page).
+  - `portal_edges_test.exs`: login/logout controllers, 404/405, assets,
+    multipart and XFF edge cases.
+  - `application_test.exs`: the production children on a real port,
+    including the websocket Origin gate (none/foreign → 403, exact → 101).
 - `confidentiality_test.exs` (§8 case 13) uses the real SDK exporter and the
   production logger. It checks that passwords, tokens, CSRF tokens,
   instructions, file names and document bytes never reach spans, logs or
-  error bodies.
+  error bodies — through the JSON API and through the LiveView pages, and
+  for a LiveView that crashes mid-event.
 - `contract_test.exs` validates every frozen fixture body and checks the
   validator against the schema's property and required sets.
 

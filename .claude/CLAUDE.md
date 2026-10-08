@@ -5,13 +5,13 @@
 1. **NEVER use `--no-verify` when committing or pushing.** The pre-push hook running `mix check` is the canonical and only quality gate. If it fails, fix the code. Do not bypass the gate.
 2. **NEVER skip git hooks.** If hooks are broken, fix them. Do not work around them.
 3. **Run `mix check` before considering any work complete.** All checks must pass: lint, structure, typecheck, depcruise, tests with coverage, examples, hook verification.
-4. **Do not surface concrete adapter implementations from `lib/frame.ex`.** Only types, ports, use cases, and errors belong in the public surface. Concrete adapters live in their own modules (e.g., `Frame.Adapters.PrintApi.Http`) and are named only by the composition root `lib/frame/application.ex` — never by `lib/frame/http/` (enforced by `mix frame.depcruise`).
+4. **Do not surface concrete adapter implementations from `lib/frame.ex`.** Only types, ports, use cases, and errors belong in the public surface. Concrete adapters live in their own modules (e.g., `Frame.Adapters.PrintApi.Http`) and are named only by the composition root `lib/frame/application.ex` — never by `lib/frame/web/` (enforced by `mix frame.depcruise`).
 5. **Domain files (`lib/frame/domain/`) must not depend on any other layer.** This is enforced by `mix frame.depcruise` and is an architectural invariant.
 6. **Use cases (`lib/frame/use_cases/`) may depend on `lib/frame/domain/` and adapter ports, but never on concrete adapter implementations.**
 7. **Pass dependencies as function arguments.** No DI containers, no application-env lookups for collaborators, no global state.
 8. **Validation (the domain `parse_*` functions) happens only at external boundaries**, not deeper inside domain or use-case logic.
 9. **No database, no object storage.** The portal talks only to the Incluir Hono API (`Frame.Adapters.PrintApi`) with the server-only service token. Sessions and login limits are in memory (single replica).
-10. **Tests must be self-contained and go through real boundaries.** The HTTP adapter and the whole portal are tested over real sockets against `Frame.Test.FakeHono`; the in-memory fake is for pure logic and examples. Every PrintApi behaviour goes in the shared conformance suite (`test/helpers/print_api.conformance.ex`).
+10. **Tests must be self-contained and go through real boundaries.** The HTTP adapter is tested over real sockets against `Frame.Test.FakeHono`; the portal through its endpoint (ConnTest/LiveViewTest) with the real HTTP adapter talking to FakeHono over a real socket; the in-memory fake is for pure logic and examples. Every PrintApi behaviour goes in the shared conformance suite (`test/helpers/print_api.conformance.ex`).
 11. **Never log or trace content or secrets:** passwords, tokens, CSRF tokens, session ids, instructions, file names, document bytes, amounts. `test/integration/confidentiality_test.exs` guards this.
 
 ## Observability Instrumentation Rules
@@ -31,7 +31,7 @@
 ### Adapters Do Not Log
 
 - **Adapters emit spans only.** Adapters do not call the Logger. Spans already carry operation name, attributes, and exceptions via `record_exception` — logging the same information separately is noise.
-- **Logs come from use cases** (business events such as `order.files_collected`) **and the router** (one `http.request` access line with the route template).
+- **Logs come from use cases** (business events such as `order.files_collected`) **and the web edge** (`Frame.Web.Edge`: one `http.request` access line with the route template). Phoenix's and LiveView's own loggers are off (they print params); LiveView callbacks get spans from `Frame.Web.LiveTelemetry`; crash reports are reduced to the exception type by `Frame.Observability.CrashReports`.
 
 ### Adapter Tracing Pattern
 
@@ -60,13 +60,14 @@ lib/frame/config.ex       — Env → Config, fail closed.
 lib/frame/domain/         — Pure: Order, Close, Contract, Competence, Money, Document, Requests, Session, LoginThrottle.
 lib/frame/use_cases/      — One file per use case. Plain functions taking deps as args.
 lib/frame/adapters/       — Ports (behaviours) + implementations (<port>/<impl>.ex).
-lib/frame/http/           — Plug edge: Router, Api, Pages, Security, Multipart, Reply, Views (+ templates/*.html.eex).
+lib/frame/web.ex          — `use Frame.Web, :controller | :live_view | :html`.
+lib/frame/web/            — Phoenix edge: Endpoint, Edge, Router, controllers/, live/, LiveAuth, SessionCookieStore, Security, Multipart, Reply, Intent, Components, Layouts.
 lib/frame/errors/         — PortalError.
 lib/frame/observability/  — Logger port, implementations, tracer helpers, Observability struct.
 lib/frame/testing/        — Exported test helpers (Frame.Testing). Uses the OTel SDK.
 lib/frame.ex              — Public API surface.
 test/unit/                — Unit + property tests (domain, memory adapters, contract).
-test/integration/         — Real sockets: HTTP adapter vs FakeHono, whole-portal black box, confidentiality.
+test/integration/         — HTTP adapter vs FakeHono (real sockets), the portal via ConnTest/LiveViewTest (async, one world per test), the release children on a real port, confidentiality.
 test/helpers/             — FakeHono, Portal harness, conformance suite, test observability.
 test/fixtures/            — Frozen upstream schema + fixtures (copied from monorepo-incluir).
 examples/                 — Runnable examples (executed by mix check).
@@ -78,6 +79,7 @@ scripts/                  — Mix tasks behind the gate.
 1. Types and boundary parsers in `lib/frame/domain/`.
 2. A port function (behaviour callback + dispatch) in `lib/frame/adapters/<port>.ex`, implemented in every adapter, and a case in the conformance suite.
 3. The use case in `lib/frame/use_cases/`: deps as the first argument, exactly one span named after the use case (`UpstreamCall.run/4` for upstream calls), business log on success.
-4. The route in `lib/frame/http/` (parse at the edge with `Frame.Domain.Requests`).
-5. Unit tests, a black-box test through the portal, and a confidentiality check if it handles content.
-6. `mix check` — all green before committing.
+4. The route in `lib/frame/web/` — a controller action for the JSON API, a LiveView event for the pages (parse at the edge with `Frame.Domain.Requests`).
+5. Tests: `Phoenix.ConnTest` / `Phoenix.LiveViewTest` via `use Frame.Test.PortalCase, async: true`, each test in its own `Frame.Test.Portal.start/1` world.
+6. Unit tests, a black-box test through the portal, and a confidentiality check if it handles content.
+7. `mix check` — all green before committing.

@@ -31,7 +31,7 @@ mix check                                         # full gate
 Portal code (production) and tests, excluding deps/_build:
 
 ```bash
-find lib -name '*.ex' -o -name '*.eex' | xargs wc -l | tail -1           # production
+find lib -name '*.ex' | xargs wc -l | tail -1                            # production
 find test -name '*.ex' -o -name '*.exs' | xargs wc -l | tail -1          # tests
 find priv/static -type f | xargs wc -l | tail -1                         # CSS + JS
 find scripts -name '*.ex' | xargs wc -l | tail -1                        # gate tasks (frame tooling)

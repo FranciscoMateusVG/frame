@@ -12,7 +12,8 @@ defmodule Frame do
     * **Observability:** `Frame.Observability.{Logger, ConsoleLogger, NoopLogger,
       OtelLogger, Observability, Tracer}`
     * **Use cases:** `Frame.UseCases.*` (one module per use case)
-    * **HTTP edge:** `Frame.Http.Router` (a Plug taking the dependency map)
+    * **Web edge:** `Frame.Web.Endpoint` (Phoenix + LiveView; started by the
+      composition root with the dependency map)
 
   Concrete adapters are deliberately NOT surfaced here. The composition
   root (`Frame.Application`) is the only place that names them:

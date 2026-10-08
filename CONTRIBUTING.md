@@ -62,7 +62,7 @@ test/
 ```
 
 - **Conformance**: every PrintApi behaviour is asserted for both adapters (memory and HTTP).
-- **Black box**: portal tests drive real HTTP with a cookie jar, like a browser. No Docker needed.
+- **Black box**: portal tests drive the endpoint with `Phoenix.ConnTest` / `Phoenix.LiveViewTest` and a cookie jar, like a browser, each in its own isolated world (async). No Docker needed.
 - **Property-based tests**: StreamData in `test/unit/`.
 - **Examples**: `examples/*.exs` run as smoke tests during `mix check`.
 
@@ -71,8 +71,8 @@ test/
 Enforced by `mix frame.depcruise` (see `scripts/depcruise.ex`):
 
 1. `domain/` → can only depend on `domain/`
-2. `use_cases/` and `http/` → can depend on `domain/` and adapter ports, not concrete implementations (only `lib/frame/application.ex` names them)
-2b. `domain/`, `use_cases/`, `adapters/` → never depend on `http/`
+2. `use_cases/` and `web/` → can depend on `domain/` and adapter ports, not concrete implementations (only `lib/frame/application.ex` names them)
+2b. `domain/`, `use_cases/`, `adapters/` → never depend on `web/`, Phoenix or LiveView
 3. Nothing depends on `lib/frame.ex` internally
 4. No OTel SDK in production code (`lib/frame/testing/` excepted)
 5. No circular dependencies
