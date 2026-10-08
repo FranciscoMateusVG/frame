@@ -159,3 +159,53 @@ These transient paths are evidence locations on the development host, not
 prerequisites for a fresh clone. Every check can be reproduced from committed
 sources. The exact final commit SHA is supplied with the handoff, since a commit
 cannot embed its own hash.
+
+## Production container (2026-10-08)
+
+The multi-stage Dockerfile uses the official rust:1.94.1-slim-bookworm builder
+(the compiler version used by this branch's benchmark; workspace minimum 1.88)
+and cargo build --release --locked -p frame-portal-web --bin print-portal.
+Only the resulting binary enters **debian:bookworm-20261005-slim**, the same
+Debian base tag as Phoenix. Runtime packages are CA certificates and libgcc-s1;
+ldd verified the binary needs libgcc_s, libm, libc and the glibc loader, not
+OpenSSL. The existing upstream HTTP adapter uses rustls. No cargo/rustc,
+source tree or build cache enters the runtime.
+
+This is ordinary [multi-stage packaging](https://docs.docker.com/build/building/multi-stage/)
+with the [official Rust image](https://hub.docker.com/_/rust), not an image-size
+contest using musl, scratch, distroless, UPX, extra strip/LTO flags or profile
+changes. Like Phoenix: UID 10001, root-owned artifact, exec-form entrypoint,
+and HTTP /healthz HEALTHCHECK at 30s/5s timeout/20s grace/3 retries. Packages
+unused by Rust (the BEAM/OpenSSL runtime, for example) are not added as padding.
+
+```bash
+docker build --platform linux/arm64 -t print-portal-rust .
+docker image inspect print-portal-rust --format '{{.Size}}'
+# Supply the four required variables through your protected environment first.
+docker run --rm -p 127.0.0.1:4000:4000 \
+  -e PRINT_PORTAL_PASSWORD -e INCLUIR_PRINT_SERVICE_TOKEN \
+  -e INCLUIR_PRINT_API_ORIGIN -e PRINT_PORTAL_ORIGIN print-portal-rust
+curl --fail http://127.0.0.1:4000/healthz
+```
+
+The image overrides the native loopback default with
+PRINT_PORTAL_BIND=0.0.0.0:4000. To change ports set PRINT_PORTAL_BIND, not PORT;
+the health probe follows its port suffix, and the published port must match.
+Secrets are runtime-only, never ARG/COPY. .dockerignore excludes .env files
+and build outputs. Cargo sees all workspace manifests but compiles only the
+portal binary and its transitive dependencies, not the Cat examples/tests.
+
+Measured locally with Docker 29.4.0 on **linux/arm64**: **113,622,076 bytes
+(108.36 MiB)** from docker image inspect .Size. This is the uncompressed logical
+image size, not compressed registry transfer, unique disk usage or runtime RAM.
+Base manifests: Debian
+sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587;
+Rust sha256:cf9dd0ec73e75f827fe59123fff9dc65af1a1c8363c3c31ee8d7f8ad0b6a5fb2.
+Image ID: sha256:1b6805b5855f5b7cd27cdf64678622dca56d8b847a1beebde6e8ba5047010fb4.
+Re-record digests/sizes after base or apt security updates.
+
+Real-container checks: /healthz and /login 200; Docker healthy; default and
+custom bind port 4010; UID 10001; no compiler; read-only root filesystem with
+all capabilities dropped; missing env exits 2. Synthetic runtime secrets were
+not present in logs. Health is liveness, not proof of an upstream Incluir
+connection. No production service or credentials were used.

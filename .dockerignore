@@ -1,0 +1,13 @@
+.git
+.husky
+.claude
+.env
+.env.*
+**/.env
+**/.env.*
+target
+coverage
+*.profraw
+*.profdata
+*.md
+docker
