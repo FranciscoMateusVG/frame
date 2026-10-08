@@ -1,0 +1,153 @@
+name: TTP
+on:
+  pull_request:
+    branches: [portal-ts, portal-rust, portal-phoenix]
+  push:
+    branches: [portal-ts, portal-rust, portal-phoenix]
+permissions: {}
+# GitHub may replace an older pending run. Preserve its cancelled metadata;
+# never silently count a replacement as the same controlled trial.
+concurrency:
+  group: ttp-branch-${{ github.event_name }}-${{ github.event.pull_request.base.ref || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  checks:
+    # Defence in depth only. Repository policy must require approval for ALL
+    # external contributors: a fork can otherwise change its own workflow.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor == github.repository_owner)
+    permissions:
+      contents: read
+    runs-on: [self-hosted, macOS, ARM64, frame-ttp]
+    timeout-minutes: 90
+    env:
+      HUSKY: '0'
+      TTP_FAKE_SHA: ${{ vars.TTP_FAKE_SHA }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+      - name: setup
+        id: setup
+        shell: bash
+        run: |
+          export PATH="/opt/homebrew/bin:$PATH"
+          echo /opt/homebrew/bin >> "$GITHUB_PATH"
+          export TTP_STATE_DIR="$RUNNER_TEMP/ttp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-checks"
+          echo "TTP_STATE_DIR=$TTP_STATE_DIR" >> "$GITHUB_ENV"
+          export TTP_CACHE_ROOT="$HOME/.cache/frame-ttp/$GITHUB_EVENT_NAME"
+          export npm_config_store_dir="$TTP_CACHE_ROOT/pnpm"
+          export CARGO_HOME="$TTP_CACHE_ROOT/cargo"
+          export CARGO_TARGET_DIR="$TTP_CACHE_ROOT/target"
+          export HEX_HOME="$TTP_CACHE_ROOT/hex"
+          export REBAR_CACHE_DIR="$TTP_CACHE_ROOT/rebar"
+          for name in TTP_CACHE_ROOT npm_config_store_dir CARGO_HOME CARGO_TARGET_DIR HEX_HOME REBAR_CACHE_DIR; do
+            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+          done
+          /opt/homebrew/bin/python3 infra/ttp/pipeline.py init
+      - name: infrastructure-self-tests
+        run: python3 infra/ttp/test_pipeline.py && python3 infra/ttp/test_timing.py
+      - name: cache
+        id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.setup.outputs.cache_paths }}
+          key: ttp-${{ github.event_name }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup.outputs.variant }}-${{ steps.setup.outputs.toolchain_key }}-${{ hashFiles('pnpm-lock.yaml', 'Cargo.lock', 'mix.lock') }}
+      - name: install
+        id: install
+        run: python3 infra/ttp/pipeline.py run install
+      - name: lint-format
+        id: lint-format
+        run: python3 infra/ttp/pipeline.py run lint-format
+      - name: typecheck-compile
+        id: typecheck-compile
+        run: python3 infra/ttp/pipeline.py run typecheck-compile
+      - name: tests
+        id: tests
+        run: python3 infra/ttp/pipeline.py run tests
+      - name: timing-report
+        if: always()
+        env:
+          TTP_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          TTP_JOB_STATUS: ${{ job.status }}
+        run: python3 infra/ttp/pipeline.py report
+      - name: timing-artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ttp-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TTP_STATE_DIR }}/*.json
+          if-no-files-found: error
+          retention-days: 30
+  deploy:
+    needs: checks
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    environment: ttp-staging
+    runs-on: [self-hosted, macOS, ARM64, frame-ttp]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          clean: true
+      - name: setup
+        shell: bash
+        run: |
+          echo /opt/homebrew/bin >> "$GITHUB_PATH"
+          echo "TTP_STATE_DIR=$RUNNER_TEMP/ttp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-deploy" >> "$GITHUB_ENV"
+      - name: checks-evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ttp-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TTP_STATE_DIR }}
+      - name: validate-checks-evidence
+        run: python3 infra/ttp/pipeline.py resume
+      - name: image-build
+        id: image-build
+        run: python3 infra/ttp/pipeline.py run image-build
+      - name: staging-deploy
+        id: staging-deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INFISICAL_URL: ${{ vars.INFISICAL_URL }}
+          INFISICAL_IDENTITY_ID: ${{ vars.INFISICAL_IDENTITY_ID }}
+          INFISICAL_PROJECT_ID: ${{ vars.INFISICAL_PROJECT_ID }}
+          INFISICAL_DENIED_PROJECT_ID: ${{ vars.INFISICAL_DENIED_PROJECT_ID }}
+          INFISICAL_ENVIRONMENT: ${{ vars.INFISICAL_ENVIRONMENT }}
+          DOKPLOY_WEBHOOK_ORIGIN: ${{ vars.DOKPLOY_WEBHOOK_ORIGIN }}
+        run: python3 infra/ttp/pipeline.py run staging-deploy
+      - name: staging-smoke
+        id: staging-smoke
+        env:
+          INFISICAL_URL: ${{ vars.INFISICAL_URL }}
+          INFISICAL_IDENTITY_ID: ${{ vars.INFISICAL_IDENTITY_ID }}
+          INFISICAL_PROJECT_ID: ${{ vars.INFISICAL_PROJECT_ID }}
+          INFISICAL_DENIED_PROJECT_ID: ${{ vars.INFISICAL_DENIED_PROJECT_ID }}
+          INFISICAL_ENVIRONMENT: ${{ vars.INFISICAL_ENVIRONMENT }}
+        run: python3 infra/ttp/pipeline.py run staging-smoke
+      - name: image-cleanup
+        if: always()
+        run: python3 infra/ttp/pipeline.py cleanup
+      - name: timing-report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TTP_JOB_STATUS: ${{ job.status }}
+        run: python3 infra/ttp/pipeline.py report
+      - name: timing-artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ttp-final-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TTP_STATE_DIR }}/ttp-timings.json
+          if-no-files-found: error
+          retention-days: 30

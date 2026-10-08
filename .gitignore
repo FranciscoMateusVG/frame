@@ -6,3 +6,7 @@ coverage/
 .DS_Store
 *.profraw
 *.profdata
+
+# TTP run artifacts
+.ttp/
+__pycache__/
