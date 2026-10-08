@@ -1,5 +1,36 @@
 # Verification and measurements
 
+## Print portal (benchmark scope)
+
+The TS vs Rust vs Elixir benchmark measures **only the portal**. The Cat
+crates stay as the template example, but they are outside that scope. The
+portal-only commands are below. Run them from the workspace root.
+
+| What | Command |
+|---|---|
+| Release artifact | `cargo build --release --locked -p frame-portal-web --bin print-portal` → `target/release/print-portal` (one native executable; config via env, see README) |
+| Portal tests (no Docker needed) | `cargo test --locked -p frame-specs --test portal_unit --test portal_integration` |
+| Portal lint | `cargo clippy --locked --all-targets -p frame-portal-domain -p frame-portal-port -p frame-portal-use-cases -p frame-portal-memory -p frame-portal-hono -p frame-portal-web -- -D warnings` |
+| Canonical gate (whole workspace, includes Cat) | `just check` / `cargo xtask check` |
+| Black-box run against a live Incluir Hono | `cargo run -p frame-examples --bin portal_e2e` with the env listed in its header (needs a running `print-portal` and Hono) |
+| Production LOC | `cat crates/portal-*/src/*.rs \| wc -l` |
+| Test LOC | `cat tests/portal_*.rs tests/*/portal_*.rs \| wc -l` |
+
+Measured **2026-10-08**, on the same host as below: Apple M3, 16 GiB, macOS 15.7.4
+arm64, rustc 1.94.1 (Homebrew). These are single wall-clock samples on a shared
+developer machine, not a controlled benchmark.
+
+| Measurement | Value |
+|---|---:|
+| clean release build of `print-portal` (empty target dir, crate cache warm) | 47.27 s (user 176.53 s) |
+| `print-portal` executable size (default release profile, no strip/LTO) | 6,202,096 bytes (5.9 MiB), Mach-O arm64 |
+| portal tests, warm artifacts (`portal_unit` 19 + `portal_integration` 13 tests, 5 of them proptests) | 2.08 s |
+| production LOC (`crates/portal-*/src/*.rs`, including the inline JS/CSS in `assets.rs`) | 5,008 |
+| test LOC (`tests/portal_*.rs` + `tests/*/portal_*.rs`, including verbatim contract fixtures) | 3,321 |
+
+LOC per crate: portal-web 2142, portal-memory 867 (the upstream fake),
+portal-use-cases 678, portal-domain 662, portal-hono 496, portal-port 163.
+
 Measured **2026-10-07**, on Apple M3 (8 logical CPUs), 16 GiB RAM,
 macOS 15.7.4 arm64. Rust/Cargo 1.94.1 (Homebrew), LLVM 21.1.8,
 Docker Engine 29.4.0 (OrbStack), PostgreSQL 16 arm64 image:

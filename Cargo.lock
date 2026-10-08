@@ -740,6 +740,7 @@ dependencies = [
  "opentelemetry_sdk",
  "reqwest",
  "serde_json",
+ "sha2",
  "sqlx",
  "testcontainers",
  "tokio",
