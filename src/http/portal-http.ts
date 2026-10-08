@@ -3,7 +3,7 @@
  * the JSON error envelope, error mapping and download responses.
  */
 import { getConnInfo } from '@hono/node-server/conninfo';
-import type { Context } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { getCookie } from 'hono/cookie';
 import type { Download } from '../adapters/print-api.js';
 import { CsrfFailedError } from '../errors/csrf-failed.error.js';
@@ -212,5 +212,81 @@ export function compact<T extends Record<string, unknown>>(
 ): { [K in keyof T]?: Exclude<T[K], undefined> } {
   return Object.fromEntries(Object.entries(object).filter(([, v]) => v !== undefined)) as {
     [K in keyof T]?: Exclude<T[K], undefined>;
+  };
+}
+
+/**
+ * Bodies up to this size are read to the end and discarded when a request
+ * is answered early (413, or 401/403 before the body is parsed) so the
+ * client reliably reads the response: Node closes a socket that still has
+ * unread request bytes, and many clients then see a reset instead of the
+ * status. Bodies beyond it (well above any legitimate upload, 5 MiB +
+ * 512 KiB) are cut off. Draining is also bounded in time.
+ */
+export const DRAIN_MAX_BYTES = 8 * 1024 * 1024;
+const DRAIN_TIMEOUT_MS = 10_000;
+
+/** Read and discard what is left of a body stream, bounded in bytes and time. */
+async function drainStream(body: ReadableStream<Uint8Array>, budget: number): Promise<void> {
+  const reader = body.getReader();
+  const deadline = Date.now() + DRAIN_TIMEOUT_MS;
+  let seen = 0;
+  try {
+    while (seen <= budget && Date.now() < deadline) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      seen += value.byteLength;
+    }
+  } catch {
+    // client went away: nothing left to drain
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** Drain the request body if no handler consumed it (outermost middleware). */
+export async function drainUnreadBody(c: PortalContext): Promise<void> {
+  const body = c.req.raw.body;
+  if (!body || c.req.raw.bodyUsed || body.locked) return;
+  await drainStream(body, DRAIN_MAX_BYTES);
+}
+
+/**
+ * Body limit that never leaves bytes unread below DRAIN_MAX_BYTES: an
+ * oversized body (declared or streamed/chunked) is drained, then `tooLarge`
+ * answers; an accepted body is buffered (≤ maxBytes) and handed on.
+ */
+export function limitBody(
+  maxBytes: number,
+  tooLarge: (c: PortalContext) => Response | Promise<Response>,
+): MiddlewareHandler<PortalEnv> {
+  return async (c, next) => {
+    const body = c.req.raw.body;
+    if (!body) {
+      await next();
+      return;
+    }
+    const declared = Number(c.req.header('content-length') ?? 'NaN');
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      await drainStream(body, DRAIN_MAX_BYTES);
+      return tooLarge(c);
+    }
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        reader.releaseLock();
+        await drainStream(body, DRAIN_MAX_BYTES - total);
+        return tooLarge(c);
+      }
+      chunks.push(value);
+    }
+    reader.releaseLock();
+    c.req.raw = new Request(c.req.raw, { body: Buffer.concat(chunks) });
+    await next();
   };
 }

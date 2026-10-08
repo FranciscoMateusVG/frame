@@ -5,13 +5,14 @@
  * composition and tests/helpers for the fake one).
  */
 import { Hono } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
 import { portalApiRoutes } from './portal-api-routes.js';
 import { PORTAL_CSS, PORTAL_JS } from './portal-assets.js';
 import { portalHtmlRoutes } from './portal-html-routes.js';
 import {
+  drainUnreadBody,
   errorToJson,
   jsonError,
+  limitBody,
   type PortalContext,
   type PortalDeps,
   type PortalEnv,
@@ -25,10 +26,7 @@ const SMALL_BODY_MAX_BYTES = 64 * 1024;
 const UPLOAD_ROUTE =
   /^\/(api\/print\/v1\/orders\/[^/]+\/quotes|api\/print\/v1\/monthly-closes\/[^/]+\/invoice|orders\/[^/]+\/quotes|invoices\/[^/]+)$/;
 
-const smallBodyLimit = bodyLimit({
-  maxSize: SMALL_BODY_MAX_BYTES,
-  onError: (c) => tooLarge(c as PortalContext),
-});
+const smallBodyLimit = limitBody(SMALL_BODY_MAX_BYTES, tooLarge);
 
 function tooLarge(c: PortalContext): Response | Promise<Response> {
   return c.req.path.startsWith('/api/')
@@ -44,6 +42,13 @@ const HTML_CSP =
 
 export function createPortalApp(deps: PortalDeps): Hono<PortalEnv> {
   const app = new Hono<PortalEnv>();
+
+  // Outermost: once a response is ready, drain any request body the
+  // handlers left unread (bounded), so early 4xx answers reach the client.
+  app.use('*', async (c, next) => {
+    await next();
+    await drainUnreadBody(c);
+  });
 
   app.use('*', async (c, next) => {
     c.set('requestId', deps.requestId());

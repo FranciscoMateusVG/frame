@@ -5,6 +5,7 @@
  */
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { request } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type FakeUpstream, startFakeUpstream } from '../helpers/fake-print-upstream.js';
@@ -48,6 +49,55 @@ function start(env: Record<string, string>): Promise<Running> {
       clearTimeout(timer);
       reject(Object.assign(new Error(`exited ${code}`), { code, output: out }));
     });
+  });
+}
+
+/**
+ * POST `totalBytes` of filler, 64 KiB at a time, with backpressure. Any
+ * socket error before the response arrives rejects (the client could not
+ * read the answer); errors after it are ignored.
+ */
+function sendOversized(
+  base: string,
+  path: string,
+  headers: Record<string, string>,
+  totalBytes: number,
+  chunked: boolean,
+  /** Keep writing the whole body even after the response (a naive client). */
+  sendAll: boolean,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    let answered = false;
+    const req = request(`${base}${path}`, {
+      method: 'POST',
+      headers: chunked ? headers : { ...headers, 'Content-Length': String(totalBytes) },
+    });
+    req.on('response', (res) => {
+      answered = true;
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d: string) => {
+        body += d;
+      });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+      res.on('error', () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on('error', (error) => {
+      if (!answered) reject(error);
+    });
+    const chunk = Buffer.alloc(64 * 1024, 'x');
+    let sent = 0;
+    const pump = () => {
+      while ((sendAll || !answered) && sent < totalBytes) {
+        sent += chunk.length;
+        if (!req.write(chunk)) {
+          req.once('drain', pump);
+          return;
+        }
+      }
+      if (sendAll || !answered) req.end();
+    };
+    pump();
   });
 }
 
@@ -125,53 +175,60 @@ describe('portal process (src/http/server.ts)', () => {
     }
   }, 30_000);
 
-  it('caps non-upload request bodies before buffering (Content-Length and chunked)', async () => {
+  it('early 413/403 answers are readable by the client for bodies within the drain bound', async () => {
     const running = await start(env());
     try {
-      const go = browser(running.base);
-      const { csrfToken } = (await (await go('/api/session')).json()) as { csrfToken: string };
-      const big = JSON.stringify({ password: 'x'.repeat(2 * 1024 * 1024) });
+      const pre = await fetch(`${running.base}/api/session`);
+      const { csrfToken } = (await pre.json()) as { csrfToken: string };
+      const cookie = pre.headers
+        .getSetCookie()
+        .map((c) => c.split(';')[0])
+        .join('; ');
+      const headers = { Origin: ORIGIN, Cookie: cookie, 'X-CSRF-Token': csrfToken };
+      const twoMiB = 2 * 1024 * 1024;
 
-      const declared = await go('/api/session', {
-        method: 'POST',
-        csrf: csrfToken,
-        headers: { 'Content-Type': 'application/json' },
-        body: big,
-      });
-      expect(declared.status).toBe(413);
-      expect(((await declared.json()) as { error: { code: string } }).error.code).toBe(
-        'PAYLOAD_TOO_LARGE',
-      );
+      for (const [path, type, chunked, expected] of [
+        ['/api/session', 'application/json', false, 413],
+        ['/api/session', 'application/json', true, 413],
+        ['/login', 'application/x-www-form-urlencoded', false, 413],
+        // A command refused before its body is parsed (no session): 401, body drained.
+        [
+          '/api/print/v1/monthly-closes/2026-09/invoice',
+          'multipart/form-data; boundary=x',
+          false,
+          401,
+        ],
+      ] as const) {
+        const res = await sendOversized(
+          running.base,
+          path,
+          { ...headers, 'Content-Type': type },
+          twoMiB,
+          chunked,
+          true,
+        );
+        expect(res.status, `${path} chunked=${chunked}`).toBe(expected);
+        if (expected === 413 && path.startsWith('/api/')) {
+          expect((JSON.parse(res.body) as { error: { code: string } }).error.code).toBe(
+            'PAYLOAD_TOO_LARGE',
+          );
+        }
+      }
 
-      // Chunked (no Content-Length): a stream body forces Transfer-Encoding.
-      const chunks = new TextEncoder().encode(big);
-      const chunked = await go('/api/session', {
-        method: 'POST',
-        csrf: csrfToken,
-        headers: { 'Content-Type': 'application/json' },
-        body: new ReadableStream({
-          start(controller) {
-            for (let i = 0; i < chunks.length; i += 65536)
-              controller.enqueue(chunks.slice(i, i + 65536));
-            controller.close();
-          },
-        }),
-        duplex: 'half',
-      } as RequestInit);
-      expect(chunked.status).toBe(413);
+      // Beyond the drain bound the server may cut the connection; it must not crash.
+      const huge = await sendOversized(
+        running.base,
+        '/api/session',
+        { ...headers, 'Content-Type': 'application/json' },
+        12 * 1024 * 1024,
+        true,
+        false,
+      ).catch(() => ({ status: -1, body: '' }));
+      expect([413, -1]).toContain(huge.status);
 
-      const form = await go('/login', {
+      const ok = await fetch(`${running.base}/api/session`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `_csrf=${csrfToken}&password=${'y'.repeat(2 * 1024 * 1024)}`,
-      });
-      expect(form.status).toBe(413);
-
-      // Normal-sized requests still work.
-      const ok = await go('/api/session', {
-        method: 'POST',
-        csrf: csrfToken,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: 'wrong-but-small-password' }),
       });
       expect(ok.status).toBe(401);

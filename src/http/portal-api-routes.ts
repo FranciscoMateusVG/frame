@@ -10,7 +10,6 @@
  * extra headers) is forwarded upstream.
  */
 import { Hono } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import type { Preconditions, Upload } from '../adapters/print-api.js';
 import { parseCentsString } from '../domain/money.js';
@@ -38,6 +37,7 @@ import {
   downloadResponse,
   errorToJson,
   jsonError,
+  limitBody,
   originAllowed,
   type PortalContext,
   type PortalDeps,
@@ -280,7 +280,7 @@ export function portalApiRoutes(deps: PortalDeps): Hono<PortalEnv> {
     return commandJson(c, 'order', result);
   });
 
-  const uploadLimit = bodyLimit({ maxSize: UPLOAD_BODY_MAX_BYTES, onError: (c) => tooLarge(c) });
+  const uploadLimit = limitBody(UPLOAD_BODY_MAX_BYTES, tooLarge);
 
   v1.post('/orders/:id/quotes', uploadLimit, async (c) => {
     const upload = await readUpload(c, ['amountCents', 'orderRevision']);

@@ -10,7 +10,6 @@
  */
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
 import type { Upload } from '../adapters/print-api.js';
 import { parseBrlToCents } from '../domain/money.js';
 import { competenceOf, isValidCompetence, previousCompetence } from '../domain/monthly-close.js';
@@ -39,6 +38,7 @@ import {
   clientKey,
   compact,
   DOCUMENT_MAX_BYTES,
+  limitBody,
   originAllowed,
   type PortalContext,
   type PortalDeps,
@@ -491,14 +491,12 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
     return c.redirect(`/orders/${encodeURIComponent(orderId)}?ok=printed`, 303);
   });
 
-  const htmlUploadLimit = bodyLimit({
-    maxSize: UPLOAD_BODY_MAX_BYTES,
-    onError: (c) =>
-      c.html(
-        errorPage('Arquivo muito grande', { kind: 'error', text: 'Arquivo acima de 5 MB.' }),
-        413,
-      ),
-  });
+  const htmlUploadLimit = limitBody(UPLOAD_BODY_MAX_BYTES, (c) =>
+    c.html(
+      errorPage('Arquivo muito grande', { kind: 'error', text: 'Arquivo acima de 5 MB.' }),
+      413,
+    ),
+  );
 
   app.post('/orders/:id/quotes', htmlUploadLimit, async (c) => {
     const begun = await beginCommand(c);

@@ -1,8 +1,9 @@
 import { type Span, SpanStatusCode, type Tracer } from '@opentelemetry/api';
+import { markSpanFailed } from '../observability/span-errors.js';
 
 /**
  * Run a use-case body inside exactly one span named after the use case.
- * Records the exception and sets ERROR status on failure, then rethrows —
+ * Marks the span failed (error type only, never message/stack) and rethrows —
  * the same shape as createCat, factored out because the portal has a dozen
  * thin use cases. Attributes must be shapes/ids, never secrets or content.
  */
@@ -19,8 +20,7 @@ export function inSpan<T>(
       span.setStatus({ code: SpanStatusCode.OK });
       return result;
     } catch (error) {
-      span.recordException(error as Error);
-      span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+      markSpanFailed(span, error);
       throw error;
     } finally {
       span.end();

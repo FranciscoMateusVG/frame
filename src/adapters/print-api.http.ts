@@ -4,6 +4,7 @@ import type { MonthlyClose } from '../domain/monthly-close.js';
 import type { Order, OrderPage } from '../domain/print-order.js';
 import { UpstreamRejectedError } from '../errors/upstream-rejected.error.js';
 import { UpstreamUnavailableError } from '../errors/upstream-unavailable.error.js';
+import { markSpanFailed } from '../observability/span-errors.js';
 import {
   CloseResponseSchema,
   ErrorSchema,
@@ -202,8 +203,7 @@ export class PrintApiHttp implements PrintApi {
         if (error instanceof UpstreamRejectedError) {
           span.setAttribute('print_api.error.code', error.code);
         }
-        span.recordException(error as Error);
-        span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+        markSpanFailed(span, error);
         throw error;
       } finally {
         span.end();

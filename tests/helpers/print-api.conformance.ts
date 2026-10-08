@@ -343,7 +343,10 @@ export function describePrintApiConformance(name: string, options: PrintApiConfo
       expect(ok?.status.code).toBe(1);
       expect(failed?.status.code).toBe(2);
       expect(failed?.attributes['print_api.error.code']).toBe('NOT_FOUND');
-      expect(failed?.events.some((e) => e.name === 'exception')).toBe(true);
+      // Type only: no exception event (message/stack never exported).
+      expect(failed?.attributes['error.type']).toBe('NOT_FOUND');
+      expect(failed?.status.message).toBe('NOT_FOUND');
+      expect(failed?.events.some((e) => e.name === 'exception')).toBe(false);
     });
   });
 }

@@ -15,6 +15,7 @@ import type {
   Quote,
 } from '../domain/print-order.js';
 import { UpstreamRejectedError } from '../errors/upstream-rejected.error.js';
+import { markSpanFailed } from '../observability/span-errors.js';
 import {
   type CommandResult,
   type Download,
@@ -408,8 +409,7 @@ export class PrintApiMemory implements PrintApi {
         if (error instanceof UpstreamRejectedError) {
           span.setAttribute('print_api.error.code', error.code);
         }
-        span.recordException(error as Error);
-        span.setStatus({ code: SpanStatusCode.ERROR, message: (error as Error).message });
+        markSpanFailed(span, error);
         throw error;
       } finally {
         span.end();

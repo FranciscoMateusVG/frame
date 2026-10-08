@@ -7,9 +7,12 @@
  * and that error responses never echo input.
  */
 import { randomUUID } from 'node:crypto';
+import type { AddressInfo } from 'node:net';
+import { serve } from '@hono/node-server';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrintApiHttp } from '../../src/adapters/print-api.http.js';
+import type { PrintApi } from '../../src/adapters/print-api.js';
 import { type FakeUpstream, startFakeUpstream } from '../helpers/fake-print-upstream.js';
 import { createTestObservability } from '../helpers/observability.js';
 import { createHarness, PASSWORD } from '../helpers/portal-harness.js';
@@ -162,5 +165,57 @@ describe('confidentiality of telemetry and errors', () => {
       (s) => s.name === 'print_api.markCollected' && s.attributes['server.address'] !== 'memory',
     );
     expect(adapter?.parentSpanContext?.spanId).toBe(useCase?.spanContext().spanId);
+  });
+
+  it('an unexpected crash (500) leaks nothing into exported spans: real listener', async () => {
+    const MARKER = `MARKER-crash-detail-${randomUUID()}`;
+    const crashing: PrintApi = new Proxy({} as PrintApi, {
+      get: () => async () => {
+        throw new Error(MARKER);
+      },
+    });
+    const h = createHarness({ printApi: crashing, observability: obs.observability });
+    const server = serve({ fetch: h.app.fetch, port: 0, hostname: '127.0.0.1' });
+    if (!server.listening) await new Promise((r) => server.once('listening', r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      obs.reset();
+      const pre = await fetch(`${base}/api/session`);
+      const { csrfToken } = (await pre.json()) as { csrfToken: string };
+      const login = await fetch(`${base}/api/session`, {
+        method: 'POST',
+        headers: {
+          Origin: 'https://grafica.test',
+          Cookie: pre.headers
+            .getSetCookie()
+            .map((c) => c.split(';')[0])
+            .join('; '),
+          'X-CSRF-Token': csrfToken,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password: PASSWORD }),
+      });
+      const cookie = login.headers
+        .getSetCookie()
+        .map((c) => c.split(';')[0])
+        .join('; ');
+      const res = await fetch(`${base}/api/print/v1/orders`, { headers: { Cookie: cookie } });
+      expect(res.status).toBe(500);
+      const body = await res.text();
+      expect(body).not.toContain(MARKER);
+      const page = await fetch(`${base}/orders`, { headers: { Cookie: cookie } });
+      expect(page.status).toBe(500);
+      expect(await page.text()).not.toContain(MARKER);
+
+      const spans = obs.getSpans();
+      const failed = spans.find((s) => s.name === 'listOrders');
+      expect(failed?.status.code).toBe(2);
+      expect(failed?.attributes['error.type']).toBe('Error');
+      expect(spanText(spans)).not.toContain(MARKER);
+      expect(spans.flatMap((s) => s.events).filter((e) => e.name === 'exception')).toEqual([]);
+      expect(JSON.stringify(h.logger.lines)).not.toContain(MARKER);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
