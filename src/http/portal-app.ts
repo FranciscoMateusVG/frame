@@ -19,6 +19,10 @@ import {
 } from './portal-http.js';
 import { errorPage } from './portal-views.js';
 
+// Replaced by tsup at build time; direct source execution has no revision.
+declare const __BUILD_SHA__: string;
+const BUILD_REVISION = typeof __BUILD_SHA__ === 'undefined' ? 'unknown' : __BUILD_SHA__;
+
 /** Every non-upload body (login, JSON commands, forms) is tiny. */
 const SMALL_BODY_MAX_BYTES = 64 * 1024;
 
@@ -86,6 +90,7 @@ export function createPortalApp(deps: PortalDeps): Hono<PortalEnv> {
     return smallBodyLimit(c, next);
   });
 
+  app.get('/version', (c) => c.json({ revision: BUILD_REVISION }));
   app.get('/healthz', (c) => c.json({ status: 'ok' }));
   app.get('/readyz', (c) => c.json({ status: 'ok' }));
 

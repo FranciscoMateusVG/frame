@@ -14,6 +14,7 @@ export default defineConfig({
   outExtension: () => ({ js: '.mjs' }),
   noExternal: [/.*/],
   dts: false,
+  define: { __BUILD_SHA__: JSON.stringify(process.env.BUILD_SHA || 'unknown') },
   sourcemap: true,
   clean: true,
   splitting: false,

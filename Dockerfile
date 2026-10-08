@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Production portal only; required configuration is supplied at runtime.
 ARG NODE_VERSION=24
 
@@ -12,7 +13,39 @@ COPY package.json pnpm-lock.yaml ./
 RUN HUSKY=0 pnpm install --frozen-lockfile
 COPY tsconfig.json tsup.portal.config.ts ./
 COPY src src
-RUN pnpm build:portal
+# CI supplies BUILD_SHA. Dokploy's public checkout supplies only filtered Git metadata.
+# The readonly context mount also supports worktrees/no .git: never follow a pointer.
+ARG BUILD_SHA
+RUN --mount=type=bind,target=/source,readonly <<'SH'
+set -eu
+derived=
+if [ -d /source/.git ] && [ -f /source/.git/HEAD ]; then
+  test ! -L /source/.git/HEAD
+  head=$(cat /source/.git/HEAD)
+  case "$head" in
+    'ref: '*)
+      ref=${head#ref: }
+      printf '%s\n' "$ref" | grep -Eq '^refs/[A-Za-z0-9._/-]+$'
+      case "$ref" in *..*|*//*) exit 1 ;; esac
+      if [ -f "/source/.git/$ref" ]; then
+        test ! -L "/source/.git/$ref"
+        derived=$(cat "/source/.git/$ref")
+      elif [ -f /source/.git/packed-refs ]; then
+        test ! -L /source/.git/packed-refs
+        derived=$(awk -v ref="$ref" '$2 == ref { print $1; exit }' /source/.git/packed-refs)
+      fi
+      ;;
+    *) derived=$head ;;
+  esac
+  printf '%s\n' "$derived" | grep -Eq '^[0-9a-f]{40}$' || { echo 'Invalid build revision metadata' >&2; exit 1; }
+fi
+if [ -n "${BUILD_SHA:-}" ] && [ -n "$derived" ] && [ "$BUILD_SHA" != "$derived" ]; then
+  echo 'BUILD_SHA disagrees with checkout metadata' >&2
+  exit 1
+fi
+export BUILD_SHA="${BUILD_SHA:-${derived:-unknown}}"
+pnpm build:portal
+SH
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 RUN useradd --system --uid 10001 --no-create-home --home-dir /app portal
@@ -24,6 +57,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 # tsup inlines all portal dependencies: no node_modules or source maps needed.
 COPY --from=build --chown=root:root --chmod=0444 /app/dist-portal/server.mjs ./server.mjs
+RUN test -z "$(find /app -name .git -print -quit)"
 USER portal
 EXPOSE 4000
 # Same probe posture as Phoenix: bash + base-system utilities, no curl package.
