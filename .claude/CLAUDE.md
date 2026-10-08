@@ -18,10 +18,10 @@
 
 ### Span Placement
 
-- **Every use case** wraps in exactly one span named after the use case (`listOrders`, `collectFiles`, etc.), via `:otel_tracer.with_span(observability.tracer, ...)`. The span captures non-PII input attributes, records exceptions, and sets error status on failure.
+- **Every use case** wraps in exactly one span named after the use case (`listOrders`, `collectFiles`, etc.), via `:otel_tracer.with_span(observability.tracer, ...)`. The span captures non-PII input attributes, records the error type, and sets error status on failure.
 - **Every adapter function** wraps in one span: `http.print_api.<operation>` (PrintApi), `session.<op>`, `login_limiter.<op>`. HTTP client spans carry method, `url.template` and status — never URLs with ids, bodies or headers.
 - **The memory PrintApi is instrumented like the HTTP one** (same span names, `peer.service` = `"memory"`).
-- **Errors** (returned `{:error, exception}` or raised) are recorded on the active span via `OpenTelemetry.Span.record_exception/3` and `set_status(span, OpenTelemetry.status(:error, ...))` before being returned or re-raised.
+- **Errors** (returned `{:error, exception}` or raised) are recorded on the active span as **type only**: `error.type` (the exception module or the contract code) + `set_status(span, OpenTelemetry.status(:error, <fixed text>))`. **Never `record_exception`** and never the message or stack trace — they may carry request data (§5 confidentiality; guarded by `test/integration/confidentiality_test.exs`, which re-reads the exported spans).
 
 ### What NOT to Instrument
 

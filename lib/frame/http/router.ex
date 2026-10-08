@@ -76,14 +76,19 @@ defmodule Frame.Http.Router do
       path -> Pages.call(conn, deps, path)
     end
   rescue
+    # An exception message or stack trace may carry request data (bodies,
+    # names, tokens): telemetry gets only the exception *type* and a fixed
+    # status, never `record_exception`. Nothing is re-raised, so Bandit never
+    # logs the exception either; a response already streaming is cut off.
     error ->
-      Tracer.record_exception(error, __STACKTRACE__)
+      type = inspect(error.__struct__)
+      Tracer.set_attribute(:"error.type", type)
       Tracer.set_status(OpenTelemetry.status(:error, "unhandled"))
-      Logger.error(deps.observability.logger, "http.unhandled", %{error: inspect(error.__struct__)})
+      Logger.error(deps.observability.logger, "http.unhandled", %{error: type})
 
       if conn.state in [:unset, :set],
         do: Reply.error(conn, :internal),
-        else: reraise(error, __STACKTRACE__)
+        else: halt(conn)
   end
 
   defp static(conn) do

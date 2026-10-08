@@ -423,9 +423,10 @@ defmodule Frame.Adapters.PrintApi.Http do
         if not failed?(result), do: Span.set_status(span, OpenTelemetry.status(:ok))
         result
       rescue
+        # Type only — never the message or stack (they may carry data).
         error ->
-          Span.record_exception(span, error, __STACKTRACE__)
-          Span.set_status(span, OpenTelemetry.status(:error))
+          Span.set_attribute(span, :"error.type", inspect(error.__struct__))
+          Span.set_status(span, OpenTelemetry.status(:error, "exception"))
           reraise error, __STACKTRACE__
       end
     end

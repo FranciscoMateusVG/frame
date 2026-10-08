@@ -202,6 +202,7 @@ defmodule Frame.Integration.ConfidentialityTest do
     {p, _} = Portal.login(p)
     deps = %{p.deps | print_api: %RaisingApi{}}
     p2 = restart_with(p, deps)
+    Frame.Test.Observability.reset(obs)
 
     log =
       capture_log(fn ->
@@ -212,6 +213,14 @@ defmodule Frame.Integration.ConfidentialityTest do
       end)
 
     refute log =~ "MARKER-crash-detail"
+
+    # The exception message may carry request data: spans record only a
+    # fixed error type, never the message or stack trace.
+    spans = Frame.Test.Observability.get_spans(obs)
+    server = Enum.find(spans, &String.starts_with?(&1.name, "HTTP GET"))
+    assert server.status.code == :error
+    assert server.attributes[:"error.type"] == "RuntimeError"
+    refute inspect(spans, limit: :infinity, printable_limit: :infinity) =~ "MARKER"
   end
 
   # Same session store (so the session cookie stays valid), new router deps.

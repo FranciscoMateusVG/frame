@@ -67,10 +67,13 @@ defmodule Frame.UseCases.UpstreamCall do
     {:ok, response}
   end
 
-  @doc "Records a typed failure on `span` and returns `{:error, error}`."
+  @doc """
+  Records a typed failure on `span` (its contract code as `error.type` and
+  status — never an exception message) and returns `{:error, error}`.
+  """
   @spec fail(:opentelemetry.span_ctx(), PortalError.t()) :: {:error, PortalError.t()}
   def fail(span, %PortalError{} = error) do
-    Span.record_exception(span, error)
+    Span.set_attribute(span, :"error.type", error.code)
     Span.set_status(span, OpenTelemetry.status(:error, error.code))
     {:error, error}
   end
