@@ -25,6 +25,16 @@ defmodule Frame.Unit.ConfigTest do
     refute inspect(c) =~ "TTTT"
   end
 
+  test "rejects an 11-character password" do
+    assert {:error, ["PRINT_PORTAL_PASSWORD must have at least 12 characters"]} =
+             Config.from_env(Map.put(@valid, "PRINT_PORTAL_PASSWORD", String.duplicate("p", 11)))
+  end
+
+  test "accepts a 12-character password" do
+    assert {:ok, _config} =
+             Config.from_env(Map.put(@valid, "PRINT_PORTAL_PASSWORD", String.duplicate("p", 12)))
+  end
+
   test "fails closed, naming variables and rules but never values" do
     assert {:error, errors} = Config.from_env(%{})
     assert length(errors) == 4

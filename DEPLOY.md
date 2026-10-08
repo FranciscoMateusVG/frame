@@ -53,8 +53,8 @@ printf %s "$token" | sha256sum   # → PRINT_SERVICE_CREDENTIALS[].sha256 on Hon
 
 ## Rotation
 
-- **Password:** change `PRINT_PORTAL_PASSWORD` and restart. Every session
-  ends with the restart.
+- **Password:** `PRINT_PORTAL_PASSWORD` requires at least 12 characters. Change it
+  and restart. Every session ends with the restart.
 - **Token:** add the new digest on Hono as current and the old one as
   previous with `expiresAt` ≤ 24 h. Then switch the portal's
   `INCLUIR_PRINT_SERVICE_TOKEN` and restart. Remove the old digest after the

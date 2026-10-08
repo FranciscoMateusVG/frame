@@ -7,7 +7,7 @@ defmodule Frame.Config do
 
   | Variable | Rule |
   |---|---|
-  | `PRINT_PORTAL_PASSWORD` | required, ≥ 16 characters |
+  | `PRINT_PORTAL_PASSWORD` | required, ≥ 12 characters |
   | `INCLUIR_PRINT_SERVICE_TOKEN` | required, 32–512 token characters, ≠ password |
   | `INCLUIR_PRINT_API_ORIGIN` | required, `http(s)://host[:port]`, no path/query/userinfo |
   | `PRINT_PORTAL_ORIGIN` | required, `http(s)://host[:port]` — the exact browser Origin |
@@ -108,9 +108,9 @@ defmodule Frame.Config do
   defp tag({:error, rule}, name), do: {:error, "#{name} #{rule}"}
 
   defp password(value) do
-    if String.valid?(value) and String.length(value) >= 16,
+    if String.valid?(value) and String.length(value) >= 12,
       do: {:ok, value},
-      else: {:error, "must have at least 16 characters"}
+      else: {:error, "must have at least 12 characters"}
   end
 
   defp token(value) do

@@ -52,7 +52,7 @@ defmodule Frame.Integration.ApplicationTest do
         end
       end)
 
-    assert stderr =~ "PRINT_PORTAL_PASSWORD must have at least 16 characters"
+    assert stderr =~ "PRINT_PORTAL_PASSWORD must have at least 12 characters"
     assert stderr =~ "INCLUIR_PRINT_SERVICE_TOKEN is required"
     refute stderr =~ "curta"
   end
