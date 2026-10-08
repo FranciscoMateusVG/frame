@@ -76,7 +76,7 @@ defmodule Frame.MixProject do
       setup: ["deps.get", "cmd git config core.hooksPath .githooks"],
       lint: ["format --check-formatted", "credo --strict"],
       "lint.fix": ["format"],
-      typecheck: ["compile --warnings-as-errors"],
+      typecheck: ["compile --force --warnings-as-errors"],
       "test.coverage": ["test --cover"],
       build: ["hex.build"],
       "db.up": ["cmd docker compose -f docker/docker-compose.yml up -d"],
@@ -92,7 +92,9 @@ defmodule Frame.MixProject do
       check: [
         "lint",
         "frame.lint_structure",
-        "typecheck",
+        # Own OS process: Mix runs each task once per session, and loading the
+        # project's gate tasks (above) may already have compiled the app.
+        "cmd env MIX_ENV=test mix typecheck",
         "frame.depcruise",
         "frame.check_codegen_drift",
         "test.coverage",
