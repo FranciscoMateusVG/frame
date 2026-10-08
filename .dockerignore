@@ -1,0 +1,14 @@
+_build
+deps
+cover
+doc
+test
+examples
+scripts
+.git
+.githooks
+.claude
+.env
+.env.*
+*.md
+Dockerfile

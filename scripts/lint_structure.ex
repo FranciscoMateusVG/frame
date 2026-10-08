@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Frame.LintStructure do
   reference's `folder-structure.mjs` (eslint-plugin-project-structure).
 
   SCOPE: only the architectural directories — `lib/`, `test/`, `examples/`,
-  `migrations/`, `scripts/` — and only Elixir source files (`.ex`/`.exs`) in
+  `scripts/` — and only Elixir source files (`.ex`/`.exs`) in
   them. Root config files and operational folders (`.claude/`, `.githooks/`,
   `docker/`) are intentionally not modeled. `*.generated.ex` is ignored.
 
@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Frame.LintStructure do
       errors / observability / testing) with snake_case file names and the
       conventional shapes (`*_error.ex`, `<port>.ex` + `<port>/<impl>.ex`).
     * `test/` mirrors the unit / integration / helpers split with `_test.exs`.
-    * `examples/`, `migrations/`, and `scripts/` follow their conventions.
+    * `examples/` and `scripts/` follow their conventions.
 
   WHAT THIS DOES NOT ENFORCE: import-graph rules (`mix frame.depcruise`) or
   lint/format (`mix format` + Credo).
@@ -26,7 +26,7 @@ defmodule Mix.Tasks.Frame.LintStructure do
 
   use Mix.Task
 
-  @roots ["lib", "test", "examples", "migrations", "scripts"]
+  @roots ["lib", "test", "examples", "scripts"]
   @ignore_patterns [~r/\.generated\.ex$/]
 
   @snake "[a-z][a-z0-9]*(?:_[a-z0-9]+)*"
@@ -40,12 +40,18 @@ defmodule Mix.Tasks.Frame.LintStructure do
       dir("lib", [
         file("frame.ex"),
         dir("frame", [
+          # The composition root (OTP application) and boot configuration.
+          file("application.ex"),
+          file("config.ex"),
           dir("domain", flat_ex),
           dir("use_cases", flat_ex),
           # <port>.ex (the behaviour) AND <port>/<impl>.ex (memory, postgres, ...)
           dir("adapters", flat_ex ++ [dir(~r/^#{@snake}$/, flat_ex)]),
           dir("errors", [file(~r/^#{@snake}_error\.ex$/)]),
           dir("observability", flat_ex),
+          # The HTTP edge (Plug): routes, views, browser security. Templates
+          # (`templates/*.html.eex`) are not Elixir sources and not modeled.
+          dir("http", flat_ex),
           dir("testing", flat_ex)
         ])
       ]),
@@ -66,9 +72,6 @@ defmodule Mix.Tasks.Frame.LintStructure do
         file(~r/^#{@snake}\.with_#{@snake}\.exs$/),
         file(~r/^#{@snake}\.#{@snake}\.exs$/)
       ]),
-
-      # ── migrations/ — <YYYYMMDD>_<NNN>_<snake_name>.exs; snake_case shape enforced ──
-      dir("migrations", [file(~r/^[a-z0-9]+(?:_[a-z0-9]+)*\.exs$/)]),
 
       # ── scripts/ — the Mix tasks behind the gate ──
       dir("scripts", [file(~r/^#{@snake}\.exs?$/)])

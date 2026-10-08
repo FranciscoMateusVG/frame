@@ -1,0 +1,246 @@
+/* Gráfica — Programa Incluir. A work-ticket tool for one print shop:
+   cool paper, navy ink, process cyan for actions, magenta for refusals,
+   press yellow for waiting. One flourish: crop marks around the ticket. */
+
+:root {
+  --paper: #f5f7f9;
+  --sheet: #ffffff;
+  --ink: #17212e;
+  --ink-soft: #4a5767;
+  --rule: #d3d9e0;
+  --cyan: #0072a3;
+  --cyan-deep: #005a82;
+  --cyan-wash: #e3f1f8;
+  --magenta: #a3175f;
+  --magenta-wash: #fbe9f2;
+  --yellow: #f2c230;
+  --yellow-wash: #fdf5d9;
+  --green: #1d7a46;
+  --green-wash: #e5f4eb;
+  --radius: 6px;
+  --font: "Avenir Next", "Segoe UI", "Helvetica Neue", Roboto, Ubuntu, system-ui, sans-serif;
+  color-scheme: light;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 1rem/1.5 var(--font);
+  font-variant-numeric: tabular-nums;
+}
+
+a { color: var(--cyan-deep); text-underline-offset: 0.18em; }
+a:hover { color: var(--ink); }
+
+:focus-visible { outline: 3px solid var(--cyan); outline-offset: 2px; }
+
+h1, h2, h3 { line-height: 1.2; margin: 0 0 0.5rem; }
+h1 { font-size: 1.75rem; font-weight: 750; letter-spacing: -0.01em; }
+h2 { font-size: 1.2rem; font-weight: 700; }
+h3 { font-size: 1.05rem; font-weight: 650; }
+p { margin: 0 0 0.75rem; max-width: 70ch; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+/* ── Header ───────────────────────────────────────────── */
+.top { background: var(--ink); color: #fff; }
+.top__inner {
+  max-width: 60rem; margin: 0 auto; padding: 0.75rem 1rem;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1.5rem;
+}
+.brand { color: #fff; text-decoration: none; font-weight: 750; font-size: 1.1rem; display: inline-flex; align-items: center; gap: 0.6rem; }
+.brand:hover { color: #fff; }
+.brand__sub { font-weight: 400; color: #b9c4d0; font-size: 0.9rem; }
+/* A registration mark: the print vernacular in one glyph. */
+.brand__mark {
+  width: 1.1rem; height: 1.1rem; border: 2px solid var(--yellow); border-radius: 50%;
+  background:
+    linear-gradient(var(--yellow), var(--yellow)) center / 2px 100% no-repeat,
+    linear-gradient(var(--yellow), var(--yellow)) center / 100% 2px no-repeat;
+}
+.nav { display: flex; align-items: center; gap: 0.25rem; }
+.nav a, .link-button {
+  color: #fff; text-decoration: none; padding: 0.45rem 0.7rem; border-radius: var(--radius);
+  font: inherit; background: none; border: 0; cursor: pointer;
+}
+.nav a:hover, .link-button:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.nav a[aria-current="page"] { box-shadow: inset 0 -3px 0 var(--yellow); border-radius: 0; }
+.nav__logout { margin: 0; }
+
+/* ── Page ─────────────────────────────────────────────── */
+.page { max-width: 60rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+.lede { color: var(--ink-soft); }
+.crumb { margin-bottom: 1rem; }
+
+.heading {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
+  gap: 1rem; margin-bottom: 1.25rem;
+}
+.heading h1 { margin: 0; }
+.filters { display: flex; align-items: flex-end; gap: 0.5rem; flex-wrap: wrap; }
+
+/* ── Forms ────────────────────────────────────────────── */
+.stack { display: grid; gap: 1rem; }
+.field { display: grid; gap: 0.3rem; }
+.field--inline { gap: 0.2rem; }
+.field__label { font-weight: 650; font-size: 0.95rem; }
+input[type="text"], input[type="password"], select {
+  font: inherit; color: var(--ink); background: var(--sheet);
+  border: 1px solid #9aa6b3; border-radius: var(--radius); padding: 0.55rem 0.7rem; min-height: 2.75rem;
+}
+input[type="file"] { font: inherit; padding: 0.4rem 0; max-width: 100%; }
+.money { display: flex; align-items: stretch; max-width: 16rem; }
+.money__prefix {
+  display: grid; place-items: center; padding: 0 0.7rem; background: var(--paper);
+  border: 1px solid #9aa6b3; border-right: 0; border-radius: var(--radius) 0 0 var(--radius); font-weight: 650;
+}
+.money input { border-radius: 0 var(--radius) var(--radius) 0; width: 100%; text-align: right; }
+.check { display: flex; gap: 0.6rem; align-items: flex-start; font-weight: 600; }
+.check input { width: 1.25rem; height: 1.25rem; margin-top: 0.1rem; accent-color: var(--cyan); }
+
+.button {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 2.75rem;
+  padding: 0.5rem 1.1rem; border-radius: var(--radius); border: 1px solid #9aa6b3;
+  background: var(--sheet); color: var(--ink); font: inherit; font-weight: 650;
+  text-decoration: none; cursor: pointer; white-space: nowrap;
+}
+.button:hover { border-color: var(--ink); color: var(--ink); }
+.button--primary { background: var(--cyan); border-color: var(--cyan); color: #fff; }
+.button--primary:hover { background: var(--cyan-deep); border-color: var(--cyan-deep); color: #fff; }
+.button--small { min-height: 2.25rem; padding: 0.3rem 0.8rem; font-size: 0.92rem; }
+.button[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+
+/* ── Notices ──────────────────────────────────────────── */
+.notice { padding: 0.75rem 1rem; border-radius: var(--radius); border-left: 5px solid; margin: 0 0 1rem; max-width: none; }
+.notice p:last-child { margin-bottom: 0; }
+.notice--ok { background: var(--green-wash); border-color: var(--green); }
+.notice--error { background: var(--magenta-wash); border-color: var(--magenta); }
+.notice--warn, .notice--wait { background: var(--yellow-wash); border-color: var(--yellow); }
+
+.empty { padding: 2rem 1.25rem; border: 2px dashed var(--rule); border-radius: var(--radius); background: var(--sheet); }
+.empty__title { font-weight: 700; font-size: 1.1rem; }
+
+/* ── Status chips ─────────────────────────────────────── */
+.status {
+  display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.88rem; font-weight: 650;
+  background: var(--paper); border: 1px solid var(--rule); white-space: nowrap;
+}
+.status--ready { background: var(--cyan-wash); border-color: var(--cyan); color: var(--cyan-deep); }
+.status--quote_pending, .status--close-submitted { background: var(--yellow-wash); border-color: var(--yellow); }
+.status--quote_rejected, .status--close-rejected { background: var(--magenta-wash); border-color: var(--magenta); color: var(--magenta); }
+.status--quote_approved, .status--printed, .status--close-accepted { background: var(--green-wash); border-color: var(--green); color: var(--green); }
+.status--cancelled { text-decoration: line-through; color: var(--ink-soft); }
+
+/* ── Orders table (stacks on phones) ──────────────────── */
+.orders { width: 100%; border-collapse: collapse; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius); }
+.orders th, .orders td { text-align: left; padding: 0.7rem 0.8rem; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.orders thead th { font-size: 0.9rem; color: var(--ink-soft); font-weight: 650; background: var(--paper); }
+.orders tfoot th, .orders tfoot td { font-weight: 750; border-bottom: 0; }
+.orders__ref { font-weight: 750; white-space: nowrap; }
+.orders__action { text-align: right; }
+.num { text-align: right; }
+.pager { display: flex; justify-content: space-between; gap: 0.75rem; margin-top: 1rem; }
+
+@media (max-width: 40rem) {
+  .orders thead { display: none; }
+  .orders, .orders tbody, .orders tr, .orders td { display: block; width: 100%; }
+  .orders tr { padding: 0.6rem 0.4rem; border-bottom: 1px solid var(--rule); }
+  .orders td { border: 0; padding: 0.2rem 0.5rem; display: flex; justify-content: space-between; gap: 1rem; }
+  .orders td::before { content: attr(data-label); color: var(--ink-soft); font-size: 0.9rem; }
+  .orders td.orders__action { justify-content: flex-start; padding-top: 0.5rem; }
+  .orders td.orders__action::before { content: none; }
+  .orders tfoot tr { display: flex; justify-content: space-between; padding: 0.6rem 0.9rem; }
+  .orders tfoot th, .orders tfoot td { display: inline; padding: 0; width: auto; }
+}
+
+/* ── The ticket: an ordem de serviço with crop marks ──── */
+.ticket {
+  position: relative; background: var(--sheet); padding: 1.75rem 1.5rem; margin: 0.75rem 0.75rem 0;
+  border: 1px solid var(--rule);
+}
+.ticket::before, .ticket::after {
+  content: ""; position: absolute; width: 1.25rem; height: 1.25rem; pointer-events: none;
+  border-color: var(--ink); border-style: solid;
+}
+.ticket::before { top: -0.75rem; left: -0.75rem; border-width: 0 1.5px 1.5px 0; }
+.ticket::after { bottom: -0.75rem; right: -0.75rem; border-width: 1.5px 0 0 1.5px; }
+
+.ticket__head { border-bottom: 2px solid var(--ink); padding-bottom: 1rem; margin-bottom: 1.25rem; }
+.ticket__ref { font-size: clamp(2.25rem, 7vw, 3.5rem); font-weight: 800; letter-spacing: -0.02em; margin: 0; line-height: 1; }
+.ticket__title { font-size: 1.15rem; margin: 0.4rem 0 1rem; color: var(--ink-soft); }
+
+.facts { display: flex; flex-wrap: wrap; gap: 0.75rem 2rem; margin: 0; }
+.facts div { min-width: 7rem; }
+.facts dt { font-size: 0.85rem; color: var(--ink-soft); }
+.facts dd { margin: 0; font-weight: 650; }
+.amount { font-size: 1.2rem; }
+.amount--diverges { color: var(--magenta); }
+
+/* A true sequence, so the steps are numbered. */
+.track { list-style: none; padding: 0; margin: 0 0 1.5rem; display: grid; grid-template-columns: repeat(5, 1fr); counter-reset: step; }
+.track__step { counter-increment: step; position: relative; padding-top: 2.2rem; font-size: 0.85rem; color: var(--ink-soft); text-align: center; }
+.track__step::before {
+  content: counter(step); position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 1.8rem; height: 1.8rem; border-radius: 50%; display: grid; place-items: center;
+  border: 2px solid var(--rule); background: var(--sheet); font-weight: 700; z-index: 1;
+}
+.track__step::after { content: ""; position: absolute; top: 0.85rem; left: -50%; width: 100%; height: 2px; background: var(--rule); }
+.track__step:first-child::after { content: none; }
+.track__step--done { color: var(--ink); }
+.track__step--done::before { background: var(--ink); border-color: var(--ink); color: #fff; }
+.track__step--done::after, .track__step--current::after { background: var(--ink); }
+.track__step--current { color: var(--ink); font-weight: 700; }
+.track__step--current::before { border-color: var(--cyan); color: var(--cyan-deep); box-shadow: 0 0 0 4px var(--cyan-wash); }
+
+.jobs { margin-bottom: 1.5rem; }
+.jobs__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
+.job { border: 1px solid var(--rule); border-radius: var(--radius); padding: 1rem; background: var(--paper); }
+.job__head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+.job__title { margin: 0; }
+.job__copies { margin: 0; white-space: nowrap; }
+.job__copies strong { font-size: 1.5rem; }
+.job__instructions { white-space: pre-line; overflow-wrap: anywhere; margin: 0.5rem 0 0.75rem; padding-left: 0.75rem; border-left: 3px solid var(--yellow); }
+.job__file { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin: 0; }
+.job__filename { font-weight: 600; overflow-wrap: anywhere; }
+.job__size { color: var(--ink-soft); font-size: 0.9rem; }
+
+.panel { border-top: 2px solid var(--ink); padding-top: 1.25rem; }
+.close .panel { margin-top: 1.5rem; }
+.close > .facts { margin-bottom: 1.25rem; }
+.close > .orders { margin-bottom: 1rem; }
+
+/* ── Dialogs ──────────────────────────────────────────── */
+.confirm {
+  border: 0; border-top: 6px solid var(--cyan); border-radius: var(--radius);
+  padding: 1.5rem; max-width: min(32rem, calc(100vw - 2rem)); color: var(--ink);
+}
+.confirm::backdrop { background: rgba(23, 33, 46, 0.55); }
+.confirm[open] { animation: rise 160ms ease-out; }
+@keyframes rise { from { opacity: 0; transform: translateY(0.5rem); } }
+
+/* ── Login / message pages ────────────────────────────── */
+.login, .message { max-width: 26rem; margin: 2.5rem auto 0; background: var(--sheet); padding: 2rem 1.5rem; border: 1px solid var(--rule); border-top: 6px solid var(--ink); border-radius: var(--radius); }
+.message { max-width: 34rem; }
+
+@media (max-width: 40rem) {
+  .page { padding-top: 1rem; }
+  .ticket { padding: 1.25rem 1rem; }
+  .track { grid-template-columns: 1fr; gap: 0.5rem; }
+  .track__step { text-align: left; padding: 0.2rem 0 0.2rem 2.5rem; min-height: 1.8rem; display: flex; align-items: center; }
+  .track__step::before { left: 0; transform: none; top: 0; }
+  .track__step::after { content: none; }
+  .actions .button { flex: 1 1 auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm[open] { animation: none; }
+}

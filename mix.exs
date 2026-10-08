@@ -6,22 +6,20 @@ defmodule Frame.MixProject do
       app: :frame,
       version: "0.1.0",
       description:
-        "AI-native Elixir SDK skeleton — reference implementation with hexagonal architecture",
+        "Print-shop portal (BFF + server-rendered HTML) for Incluir, on the Frame skeleton",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      package: package(),
+      releases: releases(),
       test_paths: ["test"],
       test_coverage: [
         tool: Frame.Scripts.CoverageThresholds,
-        # Same exclusions as the reference: generated types, the public entry
-        # point, the exported testing helper — plus test helpers and scripts,
-        # which the reference never measures (it only covers src/).
+        # Excluded: the public entry point, the exported testing helper, test
+        # helpers and scripts (the reference only measures src/).
         ignore_modules: [
           Frame,
-          Frame.Adapters.DbTypes.Cats,
           ~r/^Frame\.Testing\./,
           ~r/^Frame\.Test\./,
           ~r/^Mix\.Tasks\./,
@@ -29,15 +27,28 @@ defmodule Frame.MixProject do
         ],
         # Per-module thresholds (percent). :cover measures lines and functions.
         thresholds: %{
-          Frame.Domain.Cat => [lines: 90, functions: 90],
-          Frame.UseCases.CreateCat => [lines: 90, functions: 90]
+          Frame.Domain.Money => [lines: 95, functions: 95],
+          Frame.Domain.Competence => [lines: 95, functions: 95],
+          Frame.Domain.Order => [lines: 95, functions: 95],
+          Frame.Domain.Document => [lines: 95, functions: 95],
+          Frame.Domain.Requests => [lines: 95, functions: 95],
+          Frame.Domain.Session => [lines: 95, functions: 95],
+          Frame.Domain.LoginThrottle => [lines: 95, functions: 95],
+          Frame.Adapters.PrintApi.Http => [lines: 85, functions: 85],
+          Frame.Adapters.SessionStore.Memory => [lines: 90, functions: 90],
+          Frame.Adapters.LoginLimiter.Memory => [lines: 90, functions: 90],
+          Frame.Http.Api => [lines: 90, functions: 90],
+          Frame.Http.Pages => [lines: 85, functions: 85],
+          Frame.Http.Security => [lines: 90, functions: 90],
+          Frame.Http.Multipart => [lines: 90, functions: 90],
+          Frame.Config => [lines: 90, functions: 90]
         }
       ]
     ]
   end
 
   def application do
-    [extra_applications: [:logger]]
+    [extra_applications: [:logger, :crypto], mod: {Frame.Application, []}]
   end
 
   def cli do
@@ -53,22 +64,27 @@ defmodule Frame.MixProject do
   defp deps do
     [
       {:opentelemetry_api, "~> 1.5"},
+      {:plug, "~> 1.20"},
+      {:bandit, "~> 1.12"},
+      # HTTP client to the Incluir Hono API. Never follows redirects.
+      {:finch, "~> 0.20"},
       # OTel SDK: optional, only for Frame.Testing (consumers own their SDK setup).
       {:opentelemetry, "~> 1.7", optional: true, runtime: false},
-      {:ecto_sql, "~> 3.14"},
-      {:postgrex, "~> 0.22.4"},
       # Logs SDK (otel_log_handler) — OtelLogger tests only.
       {:opentelemetry_experimental, "~> 0.6.0", only: :test, runtime: false},
-      {:testcontainers, "~> 2.4", only: [:dev, :test]},
       {:stream_data, "~> 1.4", only: [:dev, :test]},
-      {:bandit, "~> 1.12", only: [:dev, :test]},
-      {:plug, "~> 1.20", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 
-  defp package do
-    [licenses: ["MIT"], links: %{}, files: ~w(lib migrations mix.exs README.md)]
+  defp releases do
+    [
+      print_portal: [
+        applications: [frame: :permanent],
+        include_executables_for: [:unix],
+        strip_beams: true
+      ]
+    ]
   end
 
   defp aliases do
@@ -78,16 +94,6 @@ defmodule Frame.MixProject do
       "lint.fix": ["format"],
       typecheck: ["compile --force --warnings-as-errors"],
       "test.coverage": ["test --cover"],
-      build: ["hex.build"],
-      "db.up": ["cmd docker compose -f docker/docker-compose.yml up -d"],
-      "db.down": ["cmd docker compose -f docker/docker-compose.yml down"],
-      "db.reset": [
-        "cmd docker compose -f docker/docker-compose.yml down -v",
-        "cmd docker compose -f docker/docker-compose.yml up -d --wait",
-        "frame.migrate"
-      ],
-      "db.migrate": ["frame.migrate"],
-      "db.codegen": ["frame.db_codegen"],
       # The Definition of Done. Every step must pass; the first failure aborts.
       check: [
         "lint",
@@ -96,11 +102,9 @@ defmodule Frame.MixProject do
         # project's gate tasks (above) may already have compiled the app.
         "cmd env MIX_ENV=test mix typecheck",
         "frame.depcruise",
-        "frame.check_codegen_drift",
         "test.coverage",
-        "cmd env MIX_ENV=test mix run examples/create_cat.exs",
-        "cmd env MIX_ENV=test mix run examples/create_cat.with_otel.exs",
-        "cmd env MIX_ENV=test mix run examples/create_cat.plug.exs",
+        "cmd env MIX_ENV=test mix run --no-start examples/portal_journey.exs",
+        "cmd env MIX_ENV=test mix run --no-start examples/portal_journey.with_otel.exs",
         "frame.verify_hooks"
       ]
     ]

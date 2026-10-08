@@ -20,7 +20,6 @@ mix lint                        # mix format --check-formatted + credo --strict
 mix frame.lint_structure        # Folder/file layout
 mix typecheck                   # compile --warnings-as-errors
 mix frame.depcruise             # Architectural rules
-mix frame.check_codegen_drift   # Generated schema matches migrated schema
 mix test.coverage               # All tests + coverage thresholds
 mix run examples/*.exs          # Examples run cleanly (MIX_ENV=test, one VM each)
 mix frame.verify_hooks          # Hooks are installed
@@ -52,28 +51,19 @@ If you're stuck and need to push a WIP branch for backup or collaboration, creat
 
 > In a checkout that shares its git config with other worktrees, `core.hooksPath` is shared too; use `git -c core.hooksPath=.githooks push` instead of changing it.
 
-## Working with Migrations
-
-1. Create a new migration file in `migrations/` following the naming convention: `YYYYMMDD_NNN_description.exs`
-2. Start your dev database: `mix db.up`
-3. Run the migration: `mix db.migrate`
-4. Regenerate the schema module: `mix db.codegen`
-5. Commit the updated `lib/frame/adapters/db_types.generated.ex`
-
-The codegen drift check in `mix check` will catch it if you forget steps 4–5.
-
 ## Test Organization
 
 ```
 test/
-├── unit/           # Fast tests using in-memory adapters
-├── integration/    # Tests against real Postgres via Testcontainers
-└── helpers/        # Shared test utilities (Testcontainers setup, conformance suite)
+├── unit/           # Pure logic, memory adapters, frozen-contract validation
+├── integration/    # Real sockets: HTTP adapter vs FakeHono, the whole portal, confidentiality
+├── helpers/        # FakeHono, Portal harness, PrintApi conformance suite, test observability
+└── fixtures/       # Frozen upstream schema + fixtures (copied from monorepo-incluir)
 ```
 
-- **Unit tests**: Use the in-memory adapter. Fast, no Docker needed.
-- **Integration tests**: Spin up Postgres via Testcontainers. Docker must be running.
-- **Property-based tests**: Use StreamData in `test/unit/`. Good for invariants.
+- **Conformance**: every PrintApi behaviour is asserted for both adapters (memory and HTTP).
+- **Black box**: portal tests drive real HTTP with a cookie jar, like a browser. No Docker needed.
+- **Property-based tests**: StreamData in `test/unit/`.
 - **Examples**: `examples/*.exs` run as smoke tests during `mix check`.
 
 ## Architectural Rules
@@ -81,7 +71,8 @@ test/
 Enforced by `mix frame.depcruise` (see `scripts/depcruise.ex`):
 
 1. `domain/` → can only depend on `domain/`
-2. `use_cases/` → can depend on `domain/` and adapter ports, not concrete implementations
+2. `use_cases/` and `http/` → can depend on `domain/` and adapter ports, not concrete implementations (only `lib/frame/application.ex` names them)
+2b. `domain/`, `use_cases/`, `adapters/` → never depend on `http/`
 3. Nothing depends on `lib/frame.ex` internally
 4. No OTel SDK in production code (`lib/frame/testing/` excepted)
 5. No circular dependencies

@@ -5,7 +5,7 @@
     %{
       name: "default",
       files: %{
-        included: ["lib/", "test/", "scripts/", "examples/", "migrations/"],
+        included: ["lib/", "test/", "scripts/", "examples/"],
         excluded: [~r"/_build/", ~r"/deps/"]
       },
       strict: true

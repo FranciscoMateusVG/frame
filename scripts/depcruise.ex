@@ -14,8 +14,12 @@ defmodule Mix.Tasks.Frame.Depcruise do
     1. `domain-no-external-imports` — `lib/frame/domain/` may only depend on
        other domain files (external libraries are allowed).
     2. `use-cases-no-concrete-adapters` — `lib/frame/use_cases/` must not
-       depend on concrete adapters (`lib/frame/adapters/<port>/<impl>.ex`
-       with impl postgres|memory|sqlite).
+       depend on concrete adapters (`lib/frame/adapters/<port>/<impl>.ex`).
+    2b. `http-no-concrete-adapters` — the HTTP edge (`lib/frame/http/`) talks
+       to use cases and ports only; concrete adapters are named by the
+       composition root (`lib/frame/application.ex`) alone.
+    2c. `domain-and-use-cases-no-http` — nothing below the edge depends on
+       `lib/frame/http/`.
     3. `no-internal-index-imports` — nothing in `lib/` depends on
        `lib/frame.ex` (the public surface).
     4. `no-otel-sdk-in-production` — nothing in `lib/` except
@@ -39,7 +43,20 @@ defmodule Mix.Tasks.Frame.Depcruise do
       comment:
         "Use cases may import from domain/ and adapter interfaces, but never from concrete adapter implementations.",
       from: ~r{^lib/frame/use_cases/},
-      to: {:file, ~r{^lib/frame/adapters/.*/(postgres|memory|sqlite)\.ex$}, nil}
+      to: {:file, ~r{^lib/frame/adapters/[a-z_]+/[a-z_]+\.ex$}, nil}
+    },
+    %{
+      name: "http-no-concrete-adapters",
+      comment:
+        "The HTTP edge depends on use cases and ports only; only lib/frame/application.ex names concrete adapters.",
+      from: ~r{^lib/frame/http/},
+      to: {:file, ~r{^lib/frame/adapters/[a-z_]+/[a-z_]+\.ex$}, nil}
+    },
+    %{
+      name: "domain-and-use-cases-no-http",
+      comment: "Domain, use cases and adapters never depend on the HTTP edge.",
+      from: ~r{^lib/frame/(domain|use_cases|adapters)/},
+      to: {:file, ~r{^lib/frame/http/}, nil}
     },
     %{
       name: "no-internal-index-imports",

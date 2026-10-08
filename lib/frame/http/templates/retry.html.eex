@@ -1,0 +1,15 @@
+<section class="message">
+  <h1>Sem resposta do sistema do Incluir</h1>
+  <p>Não foi possível confirmar a operação agora. Ela pode não ter sido registrada — ou pode ter chegado sem que a resposta voltasse.</p>
+  <p>Consulte a situação antes de repetir. Se repetir, a mesma confirmação é reenviada e não é registrada duas vezes.</p>
+  <div class="actions">
+    <a class="button button--primary" href="<%= @back %>">Consultar novamente</a>
+    <%= if @fields do %>
+    <form method="post" action="<%= @action %>">
+      <%= for {name, value} <- @fields do %><input type="hidden" name="<%= name %>" value="<%= value %>">
+      <% end %>
+      <button type="submit" class="button">Repetir</button>
+    </form>
+    <% end %>
+  </div>
+</section>
