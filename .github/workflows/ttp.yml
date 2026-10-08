@@ -21,6 +21,7 @@ jobs:
       name: ${{ github.event_name == 'push' && 'ttp-staging' || 'ttp-checks' }}
     env:
       HUSKY: '0'
+      TTP_STATE_DIR: ${{ runner.temp }}/ttp-${{ github.run_id }}-${{ github.run_attempt }}
       TTP_FAKE_SHA: ${{ vars.TTP_FAKE_SHA }}
       GH_TOKEN: ${{ github.token }}
       INFISICAL_URL: ${{ vars.INFISICAL_URL }}
@@ -81,7 +82,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ttp-${{ steps.setup.outputs.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .ttp/ttp-timings.json
+          path: ${{ env.TTP_STATE_DIR }}/ttp-timings.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30

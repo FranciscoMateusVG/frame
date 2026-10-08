@@ -1,5 +1,8 @@
 """Exercise timing records through real subprocess exits; no mocked process boundary."""
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -26,6 +29,15 @@ class TimingTests(unittest.TestCase):
         finally:
             pipeline.STATE = previous_state
             pipeline.COMMANDS["ts"]["install"] = previous_command
+
+    def test_run_state_can_live_outside_source_checkout(self):
+        with tempfile.TemporaryDirectory(prefix="ttp-runner-temp-") as tmp:
+            output = subprocess.check_output(
+                [sys.executable, "-c", "import pipeline; print(pipeline.STATE)"],
+                cwd=Path(__file__).parent,
+                env={**os.environ, "TTP_STATE_DIR": tmp}, text=True,
+            ).strip()
+            self.assertEqual(output, tmp)
 
     def test_csrf_is_parsed_without_logging_the_page(self):
         self.assertEqual(Inputs('<input name="_csrf" value="a&amp;b">').csrf, "a&b")
