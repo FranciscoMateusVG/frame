@@ -9,7 +9,16 @@ portal branches. Changes to common files must be mirrored and reviewed together.
 Dedicated `frame-ttp-mini` runner, labels `self-hosted, macOS, ARM64, frame-ttp`.
 Only same-repository PRs by the repository owner and branch pushes are admitted.
 No `pull_request_target`, fork checkout, general Dokploy token, or production secret.
-One job at a time on the runner; each stage waits for the two existing Incluir
+Repository policy requires approval for **all external contributors**; the YAML
+condition is only defence in depth, not the fork security boundary. The checks job
+has contents:read only, no Environment, no OIDC and no GH_TOKEN environment. The
+push-only deploy job needs checks and has the staging Environment/OIDC; GH_TOKEN
+is scoped to webhook polling/report steps. Approved dependencies/code still run on
+a persistent host: job separation is not a sandbox against trusted malicious code.
+
+Per-branch workflow concurrency and global cross-arm job concurrency are explicit.
+GitHub can replace older pending runs; cancelled metadata must remain in the
+dataset, never silently substitute a sample. The runner also runs one job at a time; each stage waits for the two existing Incluir
 workers to be idle. Contention during a stage invalidates comparison, not evidence:
 the original timings/failures remain in the artifact. This does not preempt Incluir.
 
@@ -20,6 +29,10 @@ the original timings/failures remain in the artifact. This does not preempt Incl
 
 Commands are explicit in `infra/ttp/pipeline.py`. Dependencies are locked; caches
 are keyed by platform, variant, actual toolchain versions, and lockfile hash.
+PR/push cache keys and native pnpm/Cargo/Hex/Rebar cache directories are separate;
+deploy checks out clean source and does not restore native caches. Image cleanup
+runs always, removes only the current run tag, and records its result (no prune).
+Infrastructure self-tests run separately, outside the timed portal tests stage.
 Rust uses `~/.cargo/bin` explicitly. `/opt/homebrew/bin` is prepended only inside
 this workflow; login shell configuration is untouched. Tool versions and cache
 hit/miss are recorded. The seven stage IDs are stable, not identical commands or
@@ -27,9 +40,11 @@ identical test counts. PRs do not deploy or fetch staging secrets.
 
 ## Auth and deployment
 
-`ttp-staging` GitHub Environment allows exactly portal-ts/rust/phoenix. Variables:
+`ttp-staging` GitHub Environment allows exactly portal-ts/rust/phoenix. Nonsecret
+configuration comes from repository variables (no tailnet IPs/project IDs in code):
 `INFISICAL_URL`, `INFISICAL_IDENTITY_ID`, `INFISICAL_PROJECT_ID`,
-`INFISICAL_ENVIRONMENT`, and `TTP_FAKE_SHA` (full frozen fake source SHA).
+`INFISICAL_ENVIRONMENT`, `INFISICAL_DENIED_PROJECT_ID` (nonexistent-key negative
+probe only), `DOKPLOY_WEBHOOK_ORIGIN`, and `TTP_FAKE_SHA` (full frozen fake source SHA).
 GitHub OIDC subject is bound to that Environment, repository, push event and portal
 ref; Infisical access TTL is 600 seconds. Identity `frame-ttp-ci` can read only
 root secrets in the dedicated `frame-ttp-staging` project's staging environment.
@@ -74,7 +89,10 @@ The TS branch carries `docker-compose.ttp-fake.yml` and `Dockerfile.fake`. The
 shared fake runs a frozen approved infra SHA on its own staging ref with
 `autoDeploy=false`. Do not advance that ref during trials. Record that full SHA
 and the fixture hash in every manifest; administrative readback verifies the
-configured fake against the live container at acceptance.
+configured fake against the live container at acceptance and before each trial
+block: internally GET `/healthz` and assert both `X-TTP-Fixture-SHA256` and the
+JSON fixtureHash. The BFF contract does not forward that header; CI does not fake
+that proof or expose the private upstream (GLaDOS approval #1292).
 
 The fake reuses `tests/helpers/fake-print-upstream.ts` and the frozen contract
 fixture, one order/two jobs, zero artificial latency. Its public-on-private-network
