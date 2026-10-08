@@ -68,6 +68,7 @@ export interface OrderSummary {
 
 export interface Order extends OrderSummary {
   readonly jobs: readonly PrintJob[];
+  readonly generalInstructions?: { readonly text: string; readonly files: readonly PrintFile[] };
   readonly currentQuote: Quote | null;
   readonly cancellationReason: string | null;
 }

@@ -245,9 +245,11 @@ export class PrintApiMemory implements PrintApi {
   downloadOrderFile(orderId: string, fileId: string): Promise<Download> {
     return this.span('downloadOrderFile', 'GET', '/orders/:id/files/:fileId', async () => {
       const { order } = this.visible(orderId);
-      const job = order.jobs.find((j) => j.file.id === fileId);
-      if (order.status === 'cancelled' || !job) throw reject('NOT_FOUND');
-      return this.download(job.file);
+      const file = (order.generalInstructions?.files ?? order.jobs.map((j) => j.file)).find(
+        (f) => f.id === fileId,
+      );
+      if (order.status === 'cancelled' || !file) throw reject('NOT_FOUND');
+      return this.download(file);
     });
   }
 

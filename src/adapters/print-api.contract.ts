@@ -79,11 +79,19 @@ export const OrderSummarySchema = z.object(orderSummaryShape).strict();
 export const OrderSchema = z
   .object({
     ...orderSummaryShape,
-    jobs: z.array(PrintJobSchema).min(1),
+    jobs: z.array(PrintJobSchema),
+    generalInstructions: z
+      .object({ text: z.string(), files: z.array(FileSchema).min(1) })
+      .strict()
+      .optional(),
     currentQuote: QuoteSchema.nullable(),
     cancellationReason: z.string().nullable(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (order) => (order.generalInstructions ? order.jobs.length === 0 : order.jobs.length > 0),
+    { message: 'Exactly one instruction mode is required', path: ['jobs'] },
+  );
 
 export const OrderListResponseSchema = z
   .object({ items: z.array(OrderSummarySchema), nextCursor: z.string().nullable() })
