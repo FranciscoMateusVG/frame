@@ -14,11 +14,16 @@ condition is only defence in depth, not the fork security boundary. The checks j
 has contents:read only, no Environment, no OIDC and no GH_TOKEN environment. The
 push-only deploy job needs checks and has the staging Environment/OIDC; GH_TOKEN
 is scoped to webhook polling/report steps. Approved dependencies/code still run on
-a persistent host: job separation is not a sandbox against trusted malicious code.
+a persistent host under the same OS user: a compromised dependency could leave a
+process to inspect later deploy environment. Job separation is not a sandbox.
+Separate OS users/ephemeral runners are out of scope, a documented residual risk.
 
-Per-branch workflow concurrency and global cross-arm job concurrency are explicit.
-GitHub can replace older pending runs; cancelled metadata must remain in the
-dataset, never silently substitute a sample. The runner also runs one job at a time; each stage waits for the two existing Incluir
+Workflow concurrency is separated by event + branch: a pending PR cannot cancel
+a pending merged deploy. There is no shared job concurrency group (GitHub keeps
+only one pending entry and would cancel older deploys). Global serialization comes
+from the single dedicated runner plus the protocol one-trial-at-a-time rule. Within
+a same-event/branch group GitHub can replace older pending runs; preserve cancelled
+metadata, never silently substitute a trial. Each stage waits for the two existing Incluir
 workers to be idle. Contention during a stage invalidates comparison, not evidence:
 the original timings/failures remain in the artifact. This does not preempt Incluir.
 
@@ -59,7 +64,8 @@ Staging secret **names**:
 
 Native Python reads credentials directly into memory; no env files, argv values,
 credential response bodies or URLs are logged. The runner reaches Infisical and
-Dokploy through existing Tailscale. Rotation: replace staging passwords/token in
+Dokploy through existing Tailscale. HTTP is acceptable only within that encrypted
+tailnet transport; never route these endpoints over public plaintext networks. Rotation: replace staging passwords/token in
 Infisical + the matching Dokploy env, redeploy the affected staging services;
 rotate scoped webhook in Dokploy then replace its Infisical key. Never production.
 

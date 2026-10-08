@@ -8,7 +8,7 @@ permissions: {}
 # GitHub may replace an older pending run. Preserve its cancelled metadata;
 # never silently count a replacement as the same controlled trial.
 concurrency:
-  group: ttp-branch-${{ github.event.pull_request.base.ref || github.ref_name }}
+  group: ttp-branch-${{ github.event_name }}-${{ github.event.pull_request.base.ref || github.ref_name }}
   cancel-in-progress: false
 jobs:
   checks:
@@ -21,9 +21,6 @@ jobs:
     permissions:
       contents: read
     runs-on: [self-hosted, macOS, ARM64, frame-ttp]
-    concurrency:
-      group: frame-ttp-mini-global
-      cancel-in-progress: false
     timeout-minutes: 90
     env:
       HUSKY: '0'
@@ -95,9 +92,6 @@ jobs:
       id-token: write
     environment: ttp-staging
     runs-on: [self-hosted, macOS, ARM64, frame-ttp]
-    concurrency:
-      group: frame-ttp-mini-global
-      cancel-in-progress: false
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
