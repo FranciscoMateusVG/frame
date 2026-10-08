@@ -765,6 +765,60 @@ async fn unknown(axum::Extension(rid): axum::Extension<RequestId>) -> Response {
     not_found(&rid)
 }
 
+/// The browser never authenticates with `Authorization` here (spec §4.5):
+/// the BFF refuses it instead of ignoring it, before session or CSRF, so it
+/// can neither be relayed upstream nor mistaken for a credential.
+async fn refuse_authorization(request: Request, next: axum::middleware::Next) -> Response {
+    if request.headers().contains_key(header::AUTHORIZATION) {
+        let rid = request
+            .extensions()
+            .get::<RequestId>()
+            .cloned()
+            .unwrap_or_else(|| RequestId(String::new()));
+        return error(
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+            "O portal não aceita o cabeçalho Authorization.",
+            &rid,
+        );
+    }
+    next.run(request).await
+}
+
+/// Request body lent to the handler; whatever it leaves unread stays here.
+struct LentBody(Arc<std::sync::Mutex<Option<Body>>>);
+
+impl axum::body::HttpBody for LentBody {
+    type Data = bytes::Bytes;
+    type Error = axum::Error;
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.as_mut() {
+            Some(body) => std::pin::Pin::new(body).poll_frame(cx),
+            None => std::task::Poll::Ready(None),
+        }
+    }
+}
+
+/// An early rejection (no session, CSRF, Authorization, bad form…) must be
+/// readable by a client that is still writing its body: after the handler
+/// answers, the unread rest is drained (bounded by the upload cap) so the
+/// connection is not torn down mid-write (EPIPE/ECONNRESET instead of 403).
+async fn drain_unread_body(request: Request, next: axum::middleware::Next) -> Response {
+    let (parts, body) = request.into_parts();
+    let slot = Arc::new(std::sync::Mutex::new(Some(body)));
+    let lent = Body::new(LentBody(slot.clone()));
+    let response = next.run(Request::from_parts(parts, lent)).await;
+    let rest = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(rest) = rest {
+        let _ = to_bytes(rest, UPLOAD_BODY_LIMIT).await;
+    }
+    response
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     let upload = DefaultBodyLimit::max(UPLOAD_BODY_LIMIT);
     let print = Router::new()
@@ -794,4 +848,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api", get(unknown))
         .route("/api/{*rest}", axum::routing::any(unknown))
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
+        .layer(axum::middleware::from_fn(refuse_authorization))
+        .layer(axum::middleware::from_fn(drain_unread_body))
 }

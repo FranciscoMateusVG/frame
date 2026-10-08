@@ -1173,3 +1173,154 @@ async fn secrets_instructions_and_documents_never_reach_spans_or_logs() {
     }
     s.server.shutdown().await;
 }
+
+#[tokio::test]
+async fn browser_authorization_headers_are_refused_not_ignored() {
+    let clock = TestClock::at(2026, 10, 8);
+    let fake = memory(&clock);
+    let id = seed_p1(&fake);
+    let server = plain_portal(fake, &clock).await;
+    let b = Browser::new(&server.base_url);
+    assert_eq!(b.login(PASSWORD).await.0, 200);
+    let bearer =
+        |req: reqwest::RequestBuilder| req.header(header::AUTHORIZATION, format!("Bearer {TOKEN}"));
+    let requests = [
+        bearer(b.request(Method::GET, "/api/print/v1/orders")),
+        bearer(b.request(Method::GET, &format!("/api/print/v1/orders/{id}"))),
+        bearer(b.request(Method::GET, "/api/session")),
+        bearer(
+            b.command(Method::POST, "/api/session")
+                .json(&json!({"password": PASSWORD})),
+        ),
+        bearer(b.command(Method::DELETE, "/api/session")),
+        bearer(
+            b.command(
+                Method::POST,
+                &format!("/api/print/v1/orders/{id}/collected"),
+            )
+            .header(header::IF_MATCH, format!("\"{id}:1\""))
+            .header("idempotency-key", uuid::Uuid::new_v4().to_string())
+            .json(&json!({"revision": 1})),
+        ),
+        b.request(Method::GET, "/api/print/v1/orders")
+            .header(header::AUTHORIZATION, "Basic Z3JhZmljYTp4"),
+    ];
+    for req in requests {
+        let (status, body) = b.json(req).await;
+        assert_eq!(
+            (status, body["error"]["code"].as_str()),
+            (400, Some("INVALID_REQUEST"))
+        );
+    }
+    // Nothing was applied and the session is intact.
+    let (status, order) = b
+        .json(b.request(Method::GET, &format!("/api/print/v1/orders/{id}")))
+        .await;
+    assert_eq!(
+        (status, order["order"]["status"].as_str()),
+        (200, Some("ready"))
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn referrer_policy_keeps_same_origin_origin_headers() {
+    // Under `no-referrer`, browsers send `Origin: null` on same-origin
+    // POST/DELETE (Fetch "append a request Origin header"), so the exact
+    // Origin check would refuse every real login/command. Proven in a real
+    // headless Chromium; this pins the header that makes it work.
+    let clock = TestClock::at(2026, 10, 8);
+    let server = plain_portal(memory(&clock), &clock).await;
+    let b = Browser::new(&server.base_url);
+    for path in ["/login", "/api/session", "/assets/portal.js", "/healthz"] {
+        let response = b.send(b.request(Method::GET, path)).await;
+        assert_eq!(
+            response.headers()[header::REFERRER_POLICY],
+            "same-origin",
+            "{path}"
+        );
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn early_rejected_uploads_still_get_a_readable_json_response() {
+    // A command refused before its body is read (no session / no CSRF) must
+    // still answer 401/403 JSON: the server drains the bounded body instead
+    // of closing the socket while the client is writing (EPIPE).
+    let clock = TestClock::at(2026, 10, 8);
+    let fake = memory(&clock);
+    let id = seed_p1(&fake);
+    let server = plain_portal(fake, &clock).await;
+    let b = Browser::new(&server.base_url);
+    assert_eq!(b.login(PASSWORD).await.0, 200);
+    let mut doc = b"%PDF-1.4\n".to_vec();
+    for size in [2 * 1024, 4 * 1024 * 1024] {
+        doc.resize(size, b'a');
+        let no_csrf = b
+            .request(Method::POST, &format!("/api/print/v1/orders/{id}/quotes"))
+            .header(header::ORIGIN, &b.base)
+            .multipart(quote_form("45900", "1", &doc));
+        let response = no_csrf.send().await.expect("response, not a broken pipe");
+        assert_eq!(response.status(), 403, "{size}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "CSRF_FAILED");
+        let anonymous = Browser::new(&server.base_url);
+        let response = anonymous
+            .command(Method::POST, "/api/print/v1/monthly-closes/2026-09/invoice")
+            .multipart(
+                multipart::Form::new()
+                    .part(
+                        "file",
+                        multipart::Part::bytes(doc.clone()).file_name("nf.pdf"),
+                    )
+                    .text("declaredTotalCents", "100"),
+            )
+            .send()
+            .await
+            .expect("response, not a broken pipe");
+        assert_eq!(response.status(), 401, "{size}");
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["error"]["code"],
+            "UNAUTHENTICATED"
+        );
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn early_rejection_waits_for_the_body_so_slow_writers_read_the_answer() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // Like undici: headers first, body afterwards. The 403 must arrive on an
+    // intact connection after the whole body was written.
+    let clock = TestClock::at(2026, 10, 8);
+    let server = plain_portal(memory(&clock), &clock).await;
+    for path in [
+        "/api/print/v1/orders/00000000-0000-4000-8000-000000000000/quotes",
+        "/api/print/v1/orders/00000000-0000-4000-8000-000000000000/collected",
+        "/api/session",
+    ] {
+        let body = vec![b'a'; 64 * 1024];
+        let mut socket = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+        let head = format!(
+            "POST {path} HTTP/1.1\r\nHost: {}\r\nOrigin: http://evil.example\r\n\
+             Content-Type: multipart/form-data; boundary=x\r\nContent-Length: {}\r\n\r\n",
+            server.addr,
+            body.len()
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        for chunk in body.chunks(8 * 1024) {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            socket
+                .write_all(chunk)
+                .await
+                .unwrap_or_else(|e| panic!("{path}: connection dropped mid-body: {e}"));
+        }
+        let mut response = vec![0u8; 4096];
+        let n = socket.read(&mut response).await.unwrap();
+        let text = String::from_utf8_lossy(&response[..n]);
+        assert!(text.starts_with("HTTP/1.1 4"), "{path}: {text}");
+        assert!(text.contains("\"error\""), "{path}: JSON error body");
+    }
+    server.shutdown().await;
+}

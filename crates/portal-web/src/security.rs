@@ -89,9 +89,12 @@ pub fn harden(headers: &mut HeaderMap) {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    // Not `no-referrer`: under it browsers send `Origin: null` on same-origin
+    // POST/DELETE, which the exact-Origin check must refuse. `same-origin`
+    // keeps the Origin and still sends nothing to other sites.
     headers.insert(
         header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
+        HeaderValue::from_static("same-origin"),
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {

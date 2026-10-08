@@ -123,6 +123,8 @@ fn allowed(name: &str) -> &[&str] {
             "serde_json",
             "getrandom",
             "uuid",
+            "bytes",
+            "http-body",
         ],
         _ => &[],
     }

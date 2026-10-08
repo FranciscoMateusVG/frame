@@ -847,6 +847,7 @@ name = "frame-portal-web"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "chrono",
  "frame-observability",
  "frame-portal-domain",
@@ -854,6 +855,7 @@ dependencies = [
  "frame-portal-port",
  "frame-portal-use-cases",
  "getrandom 0.3.4",
+ "http-body",
  "maud",
  "serde",
  "serde_json",
