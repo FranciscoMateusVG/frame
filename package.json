@@ -53,7 +53,7 @@
     "depcruise": "depcruise src",
     "verify-hooks": "node scripts/verify-hooks.js",
     "check:codegen-drift": "tsx scripts/check-codegen-drift.ts",
-    "check": "pnpm lint && pnpm lint:structure && pnpm depcruise && pnpm typecheck && pnpm check:codegen-drift && pnpm test:coverage && tsx examples/create-cat.ts && tsx examples/create-cat.with-otel.ts && tsx examples/create-cat.hono.ts && pnpm verify-hooks",
+    "check": "pnpm lint && pnpm lint:structure && pnpm depcruise && pnpm typecheck && pnpm build && pnpm check:codegen-drift && pnpm test:coverage && tsx examples/create-cat.ts && tsx examples/create-cat.with-otel.ts && tsx examples/create-cat.hono.ts && pnpm verify-hooks",
     "db:up": "docker compose -f docker/docker-compose.yml up -d",
     "db:down": "docker compose -f docker/docker-compose.yml down",
     "db:reset": "docker compose -f docker/docker-compose.yml down -v && docker compose -f docker/docker-compose.yml up -d && sleep 2 && pnpm db:migrate",
