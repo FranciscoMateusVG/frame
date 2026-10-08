@@ -735,6 +735,7 @@ dependencies = [
  "axum",
  "chrono",
  "frame",
+ "frame-portal-domain",
  "frame-postgres",
  "opentelemetry",
  "opentelemetry_sdk",

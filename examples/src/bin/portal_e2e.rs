@@ -7,6 +7,10 @@
 //!   E2E_FOREIGN_ORDER_ID    an order of another supplier (must be invisible)
 //!   APPROVE_QUOTE_CMD       command run with the order id as its argument;
 //!                           performs Financeiro's human approval upstream
+//!   E2E_CLOSED_COMPETENCE   an ended YYYY-MM with printed, unbilled orders
+//!   DECIDE_INVOICE_CMD      command run as `<closeId> rejected <reason>` and
+//!                           `<closeId> accepted`: Financeiro's NF decision
+use frame_portal_domain::Competence;
 use reqwest::{Method, RequestBuilder, Response, header, multipart};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -284,26 +288,213 @@ async fn main() {
     assert_eq!(body["order"]["approvedAmountCents"], 45_900);
     ok("Financeiro approval (real staff route) → printed 200, approvedAmountCents 45900");
 
-    let (status, close, _) = b
-        .json(b.request(Method::GET, "/api/print/v1/monthly-closes/2026-09"))
+    // ── Monthly NF: a closed competence with printed items (seeded) and the
+    // current one, which now holds the order printed above. ──────────────
+    let closed = env("E2E_CLOSED_COMPETENCE");
+    let decide = env("DECIDE_INVOICE_CMD");
+    let current = Competence::containing(std::time::SystemTime::now().into()).to_string();
+    let close_path = |c: &str| format!("/api/print/v1/monthly-closes/{c}");
+    let (status, now_close, headers) = b.json(b.request(Method::GET, &close_path(&current))).await;
+    assert_eq!(status, 200, "{now_close}");
+    assert_eq!(now_close["close"]["periodClosed"], false);
+    assert!(
+        now_close["close"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["orderId"] == order_id.as_str()),
+        "printed order billed into the current São Paulo month"
+    );
+    let now_etag = headers[header::ETAG].to_str().unwrap().to_owned();
+    let nf = |bytes: &'static [u8], name: &str| {
+        multipart::Part::bytes(bytes.to_vec()).file_name(name.to_owned())
+    };
+    let invoice = |c: &str, etag: &str, key: &str, total: i64, part: multipart::Part| {
+        b.command(Method::POST, &format!("{}/invoice", close_path(c)))
+            .header(header::IF_MATCH, etag)
+            .header("idempotency-key", key)
+            .multipart(
+                multipart::Form::new()
+                    .part("file", part)
+                    .text("declaredTotalCents", total.to_string()),
+            )
+    };
+    const NF_PDF: &[u8] = b"%PDF-1.4\n% nota fiscal e2e rust\n%%EOF\n";
+    const NF_PDF_2: &[u8] = b"%PDF-1.4\n% nota fiscal e2e rust corrigida\n%%EOF\n";
+    let (status, body, _) = b
+        .json(invoice(
+            &current,
+            &now_etag,
+            &key(),
+            45_900,
+            nf(NF_PDF, "nf.pdf"),
+        ))
         .await;
-    let invoices = b
-        .send(b.request(Method::GET, "/invoices?competence=2026-09"))
+    assert_eq!((status, code(&body)), (409, "PERIOD_OPEN"));
+    let page = b
+        .send(b.request(Method::GET, &format!("/invoices?competence={current}")))
         .await
         .text()
         .await
         .unwrap();
-    if status == 404 {
-        assert!(invoices.contains("Notas fiscais ainda indisponíveis"));
-        ok("monthly close: upstream 404 → \"Notas fiscais ainda indisponíveis\"");
-    } else {
-        assert_eq!(status, 200, "{close}");
-        assert!(invoices.contains("Total calculado"));
-        ok(&format!(
-            "monthly close 2026-09: state {}, total {}",
-            close["close"]["state"], close["close"]["expectedTotalCents"]
-        ));
-    }
+    assert!(page.contains("Competência em andamento") && !page.contains("Enviar NF"));
+    let (status, body, _) = b.json(b.request(Method::GET, &close_path("2026-13"))).await;
+    assert_eq!((status, code(&body)), (400, "INVALID_COMPETENCE"));
+    ok(&format!(
+        "NF {current}: open period lists the printed order, upload 409 PERIOD_OPEN; bad competence 400"
+    ));
+
+    let (status, close, headers) = b.json(b.request(Method::GET, &close_path(&closed))).await;
+    assert_eq!(status, 200, "{close}");
+    let close_id = close["close"]["id"].as_str().unwrap().to_owned();
+    let expected = close["close"]["expectedTotalCents"].as_i64().unwrap();
+    assert!(close["close"]["periodClosed"].as_bool().unwrap() && expected > 0);
+    assert_eq!(close["close"]["state"], "open");
+    let etag = headers[header::ETAG].to_str().unwrap().to_owned();
+    let page = b
+        .send(b.request(Method::GET, &format!("/invoices?competence={closed}")))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("Total calculado") && page.contains("Enviar NF"));
+    let (status, body, _) = b
+        .json(invoice(
+            &closed,
+            &etag,
+            &key(),
+            expected,
+            nf(b"<svg onload=alert(1)>", "nf.svg"),
+        ))
+        .await;
+    assert_eq!((status, code(&body)), (415, "UNSUPPORTED_MEDIA_TYPE"));
+    let k = key();
+    let divergent = expected - 1;
+    let (status, submitted, headers) = b
+        .json(invoice(
+            &closed,
+            &etag,
+            &k,
+            divergent,
+            nf(NF_PDF, "NF setembro.pdf"),
+        ))
+        .await;
+    assert_eq!(
+        (status, submitted["close"]["state"].as_str()),
+        (201, Some("submitted")),
+        "{submitted}"
+    );
+    let submitted_etag = headers[header::ETAG].to_str().unwrap().to_owned();
+    let (status, replay, headers) = b
+        .json(invoice(
+            &closed,
+            &etag,
+            &k,
+            divergent,
+            nf(NF_PDF, "NF setembro.pdf"),
+        ))
+        .await;
+    assert_eq!(status, 201);
+    assert_eq!(headers["idempotency-replayed"], "true");
+    assert_eq!(replay, submitted);
+    let (status, body, _) = b
+        .json(invoice(
+            &closed,
+            &etag,
+            &k,
+            expected,
+            nf(NF_PDF, "NF setembro.pdf"),
+        ))
+        .await;
+    assert_eq!((status, code(&body)), (409, "IDEMPOTENCY_CONFLICT"));
+    let (status, body, _) = b
+        .json(invoice(
+            &closed,
+            &submitted_etag,
+            &key(),
+            expected,
+            nf(NF_PDF, "nf.pdf"),
+        ))
+        .await;
+    assert_eq!((status, code(&body)), (409, "INVALID_STATE"));
+    let r = b
+        .send(b.request(Method::GET, &format!("{}/invoice", close_path(&closed))))
+        .await;
+    assert_eq!(r.status(), 200);
+    assert!(
+        r.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment;")
+    );
+    assert_eq!(&r.bytes().await.unwrap()[..], NF_PDF);
+    let page = b
+        .send(b.request(Method::GET, &format!("/invoices?competence={closed}")))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("Aguardando conferência") && page.contains("diverge"));
+    ok(&format!(
+        "NF {closed}: 415 for SVG; divergent NF 201 submitted, same key replays, other intent 409, \
+         second upload 409 INVALID_STATE, download = uploaded bytes, page flags divergence"
+    ));
+
+    let run = |args: &[&str]| {
+        let out = Command::new(&decide)
+            .args(args)
+            .output()
+            .expect("decision command runs");
+        assert!(out.status.success(), "decision command failed");
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            text.trim_end().ends_with("HTTP 200"),
+            "decision not applied: {text}"
+        );
+    };
+    run(&[&close_id, "rejected", "Valor diverge do total calculado"]);
+    let (_, close, headers) = b.json(b.request(Method::GET, &close_path(&closed))).await;
+    assert_eq!(close["close"]["state"], "rejected");
+    assert_eq!(
+        close["close"]["rejectionReason"],
+        "Valor diverge do total calculado"
+    );
+    let page = b
+        .send(b.request(Method::GET, &format!("/invoices?competence={closed}")))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("NF rejeitada") && page.contains("Enviar NF"));
+    let etag = headers[header::ETAG].to_str().unwrap().to_owned();
+    let (status, body, _) = b
+        .json(invoice(
+            &closed,
+            &etag,
+            &key(),
+            expected,
+            nf(NF_PDF_2, "NF setembro corrigida.pdf"),
+        ))
+        .await;
+    assert_eq!(
+        (status, body["close"]["state"].as_str()),
+        (201, Some("submitted"))
+    );
+    assert_eq!(body["close"]["declaredTotalCents"], expected);
+    run(&[&close_id, "accepted"]);
+    let (_, close, _) = b.json(b.request(Method::GET, &close_path(&closed))).await;
+    assert_eq!(close["close"]["state"], "accepted");
+    assert!(close["close"]["acceptedAt"].is_string());
+    let page = b
+        .send(b.request(Method::GET, &format!("/invoices?competence={closed}")))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("NF aceita") && !page.contains("Enviar NF"));
+    ok(&format!(
+        "NF {closed}: Financeiro rejects (reason shown) → resubmit exact total 201 → Financeiro accepts → accepted"
+    ));
 
     assert_eq!(
         b.send(b.command(Method::DELETE, "/api/session"))
