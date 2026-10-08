@@ -21,7 +21,6 @@ jobs:
       name: ${{ github.event_name == 'push' && 'ttp-staging' || 'ttp-checks' }}
     env:
       HUSKY: '0'
-      TTP_STATE_DIR: ${{ runner.temp }}/ttp-${{ github.run_id }}-${{ github.run_attempt }}
       TTP_FAKE_SHA: ${{ vars.TTP_FAKE_SHA }}
       GH_TOKEN: ${{ github.token }}
       INFISICAL_URL: ${{ vars.INFISICAL_URL }}
@@ -40,6 +39,8 @@ jobs:
         run: |
           export PATH="/opt/homebrew/bin:$PATH"
           echo /opt/homebrew/bin >> "$GITHUB_PATH"
+          export TTP_STATE_DIR="$RUNNER_TEMP/ttp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "TTP_STATE_DIR=$TTP_STATE_DIR" >> "$GITHUB_ENV"
           /opt/homebrew/bin/python3 infra/ttp/pipeline.py init
       - name: cache
         id: cache
