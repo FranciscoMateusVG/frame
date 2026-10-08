@@ -16,3 +16,7 @@ scripts
 .env.*
 *.md
 Dockerfile
+
+# CI timing records are not image inputs
+.ttp
+**/__pycache__

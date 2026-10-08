@@ -13,3 +13,7 @@ frame-*.tar
 !.env.example
 .DS_Store
 tmp/
+
+# TTP run artifacts
+.ttp/
+__pycache__/

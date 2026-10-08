@@ -1,0 +1,28 @@
+# TTP staging only. Dokploy must use isolatedDeployment=true: never attach
+# this portal to the shared production dokploy-network or Incluir networks.
+# BUILD_SHA is derived from the actual filtered Git checkout by the Dockerfile;
+# it is not supplied as mutable runtime environment or a stale Dokploy env value.
+services:
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    deploy:
+      replicas: 1
+    environment:
+      PORT: "4000"
+      HOST: 0.0.0.0
+      PRINT_PORTAL_ORIGIN: ${PRINT_PORTAL_ORIGIN:?staging origin required}
+      PRINT_PORTAL_PASSWORD: ${PRINT_PORTAL_PASSWORD:?synthetic staging password required}
+      INCLUIR_PRINT_SERVICE_TOKEN: ${INCLUIR_PRINT_SERVICE_TOKEN:?synthetic fake token required}
+      INCLUIR_PRINT_API_ORIGIN: http://ttp-fake:4001
+      PRINT_PORTAL_TRUSTED_PROXIES: ${PRINT_PORTAL_TRUSTED_PROXIES:?isolated ingress CIDR required}
+    networks:
+      - ttp-private
+networks:
+  ttp-private:
+    external: true
+    name: frame-ttp-private
