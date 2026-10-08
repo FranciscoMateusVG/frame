@@ -199,3 +199,43 @@ fn ids_and_digests_have_exact_shapes() {
     assert_eq!(OrderStatus::parse("awaiting_readiness"), None);
     assert_eq!(utf16_len("😀"), 2);
 }
+
+#[test]
+fn general_instructions_roundtrip_and_exclusive_modes() {
+    let fixture: Value = serde_json::from_str(ORDERS).unwrap();
+    let original = fixture["GET /orders/:id (ready)"].clone();
+    let mut legacy = original.clone();
+    let files: Vec<Value> = original["order"]["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| j["file"].clone())
+        .collect();
+    legacy["order"]["generalInstructions"] =
+        serde_json::json!({"text": "Texto integral\nSem vínculo", "files": files});
+    legacy["order"]["jobs"] = serde_json::json!([]);
+    roundtrip::<OrderResponse>(&legacy);
+    for general in [
+        Value::Null,
+        serde_json::json!({"text":"x","files":[]}),
+        serde_json::json!({"text":7,"files":files}),
+        serde_json::json!({"text":"x","files":files,"bucket":"private"}),
+        serde_json::json!({"text":"x","files":[{}]}),
+    ] {
+        let mut bad = legacy.clone();
+        bad["order"]["generalInstructions"] = general;
+        assert!(
+            serde_json::from_value::<OrderResponse>(bad)
+                .map_err(|_| ())
+                .and_then(|r| r.validate().map_err(|_| ()))
+                .is_err()
+        );
+    }
+    legacy["order"]["jobs"] = original["order"]["jobs"].clone();
+    assert!(
+        serde_json::from_value::<OrderResponse>(legacy)
+            .map_err(|_| ())
+            .and_then(|r| r.validate().map_err(|_| ()))
+            .is_err()
+    );
+}

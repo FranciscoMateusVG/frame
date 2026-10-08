@@ -289,6 +289,7 @@ impl PrintApiMemory {
             printed_at: None,
             approved_amount_cents: None,
             jobs,
+            general_instructions: None,
             current_quote: None,
             cancellation_reason: None,
         };
