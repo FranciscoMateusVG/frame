@@ -1533,3 +1533,25 @@ async fn legacy_general_instructions_cross_http_and_render_with_all_downloads() 
     }
     s.server.shutdown().await;
 }
+
+#[tokio::test]
+async fn version_is_public_no_store_and_contains_only_build_revision() {
+    let clock = TestClock::at(2026, 10, 8);
+    let server = plain_portal(memory(&clock), &clock).await;
+    let response = reqwest::get(format!("{}/version", server.base_url))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        response.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"revision": "unknown"})
+    );
+    server.shutdown().await;
+}
