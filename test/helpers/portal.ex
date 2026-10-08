@@ -1,13 +1,23 @@
 defmodule Frame.Test.Portal do
   @moduledoc """
-  Starts the whole portal for black-box tests: `Frame.Http.Router` on Bandit
-  (real socket), wired with the real HTTP adapter to a `FakeHono` (real
-  socket), the real session store and login limiter. Requests go through
-  Finch with a tiny cookie jar, like a browser would.
+  The whole portal for tests, the Phoenix way: requests go through
+  `Frame.Web.Endpoint` with `Phoenix.ConnTest` (and LiveViews with
+  `Phoenix.LiveViewTest` on `conn/1`), carrying a small cookie jar like a
+  browser.
+
+  **One shared setup** (`start_shared/0`, from `test_helper.exs`): one
+  `FakeHono` listener (real socket), one Finch pool, the PubSub and the
+  endpoint. Each `start/1` then gets its **own** world — a FakeHono tenant
+  (own token and in-memory upstream), its own session store and login
+  limiter — and passes it to the endpoint per conn
+  (`conn.private.frame_deps`), the way the composition root passes its
+  own. So tests are `async: true` and never see each other's orders,
+  sessions or limits; the portal still talks to the upstream through the
+  real HTTP adapter over a real socket.
 
       portal = Frame.Test.Portal.start()
       {portal, body} = Frame.Test.Portal.login(portal)
-      resp = Frame.Test.Portal.get(portal, "/api/print/v1/orders")
+      {portal, resp} = Frame.Test.Portal.get(portal, "/api/print/v1/orders")
   """
 
   alias Frame.Adapters.LoginLimiter
@@ -20,38 +30,78 @@ defmodule Frame.Test.Portal do
   alias Frame.Test.FakeHono
 
   @password "senha-compartilhada-de-teste"
+  @origin "http://portal.test"
+  @finch Frame.Test.Finch
+  @endpoint Frame.Web.Endpoint
 
-  defstruct [:port, :origin, :hono, :memory, :deps, :finch, jar: %{}, csrf: nil]
+  defstruct [:origin, :hono, :memory, :deps, jar: %{}, csrf: nil, remote_ip: {127, 0, 0, 1}]
 
   def password, do: @password
+  def origin, do: @origin
 
   @doc """
-  Options: `:clock`, `:session_policy`, `:limits`, `:trusted_proxies`,
-  `:timeout_ms`, `:observability`, `:token` (what the portal sends; defaults
-  to the fake's token).
+  Starts the shared resources once (test_helper): Finch, the FakeHono
+  listener, PubSub and the endpoint (no listener; ConnTest dispatches
+  in-process).
+  """
+  def start_shared do
+    {:ok, _} = Finch.start_link(name: @finch)
+    hono = FakeHono.start()
+    :persistent_term.put({__MODULE__, :hono}, hono)
+    {:ok, pubsub} = Phoenix.PubSub.Supervisor.start_link(name: Frame.PubSub)
+    Process.unlink(pubsub)
+    restart_endpoint(hono)
+  end
+
+  @doc "Restarts the shared PubSub and endpoint (after a test took their names over)."
+  def restart_shared do
+    {:ok, pubsub} = Phoenix.PubSub.Supervisor.start_link(name: Frame.PubSub)
+    Process.unlink(pubsub)
+    restart_endpoint(hono())
+  end
+
+  @doc "(Re)starts the shared endpoint (no listener) with default deps on `hono`."
+  def restart_endpoint(hono) do
+    {:ok, config} = config(hono.token, FakeHono.origin(hono))
+    deps = deps(config, hono, [])
+    {:ok, pid} = @endpoint.start_link(Frame.Application.endpoint_options(config, deps))
+    Process.unlink(pid)
+    :ok
+  end
+
+  @doc "The shared FakeHono listener."
+  def hono, do: :persistent_term.get({__MODULE__, :hono})
+
+  @doc """
+  A fresh, isolated portal world. Options: `:clock`, `:session_policy`,
+  `:limits`, `:trusted_proxies`, `:timeout_ms`, `:observability`, `:token`
+  (what the portal sends; defaults to its tenant's token), `:hono` (another
+  FakeHono to talk to).
   """
   def start(opts \\ []) do
     clock = Keyword.get(opts, :clock, &DateTime.utc_now/0)
-    hono = FakeHono.start(clock: clock)
-    finch = :"finch_#{System.unique_integer([:positive])}"
-    {:ok, _} = Finch.start_link(name: finch)
-
-    port = free_port()
-    origin = "http://localhost:#{port}"
-
-    {:ok, config} =
-      Frame.Config.from_env(%{
-        "PRINT_PORTAL_PASSWORD" => @password,
-        "INCLUIR_PRINT_SERVICE_TOKEN" => Keyword.get(opts, :token, hono.token),
-        "INCLUIR_PRINT_API_ORIGIN" => FakeHono.origin(hono),
-        "PRINT_PORTAL_ORIGIN" => origin
-      })
-
+    hono = FakeHono.tenant(Keyword.get_lazy(opts, :hono, &hono/0), clock: clock)
+    {:ok, config} = config(Keyword.get(opts, :token, hono.token), FakeHono.origin(hono))
     config = %{config | trusted_proxies: Keyword.get(opts, :trusted_proxies, [])}
+
+    %__MODULE__{origin: @origin, hono: hono, memory: hono.memory, deps: deps(config, hono, opts)}
+  end
+
+  defp config(token, api_origin) do
+    Frame.Config.from_env(%{
+      "PRINT_PORTAL_PASSWORD" => @password,
+      "INCLUIR_PRINT_SERVICE_TOKEN" => token,
+      "INCLUIR_PRINT_API_ORIGIN" => api_origin,
+      "PRINT_PORTAL_ORIGIN" => @origin
+    })
+  end
+
+  defp deps(config, _hono, opts) do
+    clock = Keyword.get(opts, :clock, &DateTime.utc_now/0)
 
     api =
       PrintApi.Http.new(
-        finch: finch,
+        finch: @finch,
         origin: config.api_origin,
         token: config.service_token,
         timeout_ms: Keyword.get(opts, :timeout_ms, 5_000)
@@ -65,47 +115,36 @@ defmodule Frame.Test.Portal do
 
     limiter = LoginLimiter.Memory.new(limits: Keyword.get(opts, :limits, %{}))
 
-    deps =
-      Frame.Application.deps(config, print_api: api, session_store: store, login_limiter: limiter)
-      |> Map.put(:clock, clock)
-      |> then(fn deps ->
-        case Keyword.get(opts, :observability) do
-          nil -> Map.put(deps, :observability, quiet_observability())
-          obs -> Map.put(deps, :observability, obs)
-        end
-      end)
-
-    {:ok, _} =
-      Bandit.start_link(
-        plug: {Frame.Http.Router, deps},
-        port: port,
-        ip: {127, 0, 0, 1},
-        startup_log: false
-      )
-
-    %__MODULE__{
-      port: port,
-      origin: origin,
-      hono: hono,
-      memory: hono.memory,
-      deps: deps,
-      finch: finch
-    }
+    config
+    |> Frame.Application.deps(print_api: api, session_store: store, login_limiter: limiter)
+    |> Map.put(:clock, clock)
+    |> Map.put(:observability, Keyword.get(opts, :observability, quiet_observability()))
   end
 
   defp quiet_observability do
     %Observability{logger: NoopLogger.new(), tracer: Tracer.noop_tracer()}
   end
 
-  defp free_port do
-    {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
-    {:ok, port} = :inet.port(socket)
-    :gen_tcp.close(socket)
-    port
-  end
-
   @doc "A fresh browser (empty cookie jar) on the same portal."
   def fresh(%__MODULE__{} = p), do: %{p | jar: %{}, csrf: nil}
+
+  @doc "The same browser seen from another client address."
+  def from_ip(%__MODULE__{} = p, ip), do: %{p | remote_ip: ip}
+
+  @doc """
+  A `Phoenix.ConnTest` conn for this browser: its cookies, its client
+  address and this portal's deps — ready for `get/2` or
+  `Phoenix.LiveViewTest.live/2`.
+  """
+  def conn(%__MODULE__{} = p) do
+    Phoenix.ConnTest.build_conn()
+    |> Map.put(:remote_ip, p.remote_ip)
+    |> Plug.Conn.put_private(:frame_deps, p.deps)
+    |> put_cookies(p.jar)
+  end
+
+  defp put_cookies(conn, jar),
+    do: Enum.reduce(jar, conn, fn {k, v}, conn -> Plug.Test.put_req_cookie(conn, k, v) end)
 
   @doc "GET /api/session then POST the password. Returns the logged-in portal handle."
   def login(%__MODULE__{} = p, password \\ @password) do
@@ -121,6 +160,12 @@ defmodule Frame.Test.Portal do
     {%{p | csrf: csrf}, resp}
   end
 
+  @doc "Logs in and returns only the signed-in handle."
+  def signed_in(%__MODULE__{} = p) do
+    {p, %{status: 200}} = login(p)
+    p
+  end
+
   def get(p, path, opts \\ []), do: request(p, :get, path, opts)
 
   @doc "A browser command: Origin + CSRF headers added."
@@ -130,32 +175,34 @@ defmodule Frame.Test.Portal do
   end
 
   @doc """
-  Sends a request. Options: `:headers`, `:json` (map), `:form` (map),
-  `:multipart` ({fields, {filename, content_type, bytes}}), `:raw` ({content_type, body}).
+  Sends a request through the endpoint. Options: `:headers`, `:json`
+  (map), `:form` (map), `:multipart` ({fields, {filename, content_type,
+  bytes}}), `:raw` ({content_type, body}).
   Returns `{portal_with_updated_jar, %{status, headers, body, raw}}`.
   """
   def request(%__MODULE__{} = p, method, path, opts \\ []) do
     {content_headers, body} = encode_body(opts)
 
-    cookie =
-      case p.jar do
-        jar when map_size(jar) == 0 -> []
-        jar -> [{"cookie", Enum.map_join(jar, "; ", fn {k, v} -> "#{k}=#{v}" end)}]
-      end
+    conn =
+      p
+      |> conn()
+      |> then(fn conn ->
+        Enum.reduce(content_headers ++ Keyword.get(opts, :headers, []), conn, fn {k, v}, conn ->
+          Plug.Conn.put_req_header(conn, k, v)
+        end)
+      end)
+      |> Phoenix.ConnTest.dispatch(@endpoint, method, path, body)
 
-    headers = content_headers ++ cookie ++ Keyword.get(opts, :headers, [])
-    req = Finch.build(method, "http://127.0.0.1:#{p.port}" <> path, headers, body)
-    {:ok, resp} = Finch.request(req, p.finch, receive_timeout: 15_000)
-
-    jar = update_jar(p.jar, resp.headers)
+    headers = conn.resp_headers
 
     decoded =
-      case JSON.decode(resp.body) do
+      case JSON.decode(conn.resp_body || "") do
         {:ok, value} -> value
-        _ -> resp.body
+        _ -> conn.resp_body
       end
 
-    {%{p | jar: jar}, %{status: resp.status, headers: resp.headers, body: decoded, raw: resp.body}}
+    {%{p | jar: update_jar(p.jar, headers)},
+     %{status: conn.status, headers: headers, body: decoded, raw: conn.resp_body}}
   end
 
   defp encode_body(opts) do

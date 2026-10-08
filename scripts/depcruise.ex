@@ -15,11 +15,12 @@ defmodule Mix.Tasks.Frame.Depcruise do
        other domain files (external libraries are allowed).
     2. `use-cases-no-concrete-adapters` — `lib/frame/use_cases/` must not
        depend on concrete adapters (`lib/frame/adapters/<port>/<impl>.ex`).
-    2b. `http-no-concrete-adapters` — the HTTP edge (`lib/frame/http/`) talks
-       to use cases and ports only; concrete adapters are named by the
-       composition root (`lib/frame/application.ex`) alone.
-    2c. `domain-and-use-cases-no-http` — nothing below the edge depends on
-       `lib/frame/http/`.
+    2b. `web-no-concrete-adapters` — the Phoenix edge (`lib/frame/web/`,
+       `lib/frame/web.ex`) talks to use cases and ports only; concrete
+       adapters are named by the composition root
+       (`lib/frame/application.ex`) alone.
+    2c. `domain-and-use-cases-no-web` — nothing below the edge depends on
+       the web layer, Phoenix or LiveView.
     3. `no-internal-index-imports` — nothing in `lib/` depends on
        `lib/frame.ex` (the public surface).
     4. `no-otel-sdk-in-production` — nothing in `lib/` except
@@ -46,17 +47,23 @@ defmodule Mix.Tasks.Frame.Depcruise do
       to: {:file, ~r{^lib/frame/adapters/[a-z_]+/[a-z_]+\.ex$}, nil}
     },
     %{
-      name: "http-no-concrete-adapters",
+      name: "web-no-concrete-adapters",
       comment:
-        "The HTTP edge depends on use cases and ports only; only lib/frame/application.ex names concrete adapters.",
-      from: ~r{^lib/frame/http/},
+        "The Phoenix edge depends on use cases and ports only; only lib/frame/application.ex names concrete adapters.",
+      from: ~r{^lib/frame/web(/|\.ex$)},
       to: {:file, ~r{^lib/frame/adapters/[a-z_]+/[a-z_]+\.ex$}, nil}
     },
     %{
-      name: "domain-and-use-cases-no-http",
-      comment: "Domain, use cases and adapters never depend on the HTTP edge.",
+      name: "domain-and-use-cases-no-web",
+      comment: "Domain, use cases and adapters never depend on the web edge.",
       from: ~r{^lib/frame/(domain|use_cases|adapters)/},
-      to: {:file, ~r{^lib/frame/http/}, nil}
+      to: {:file, ~r{^lib/frame/web(/|\.ex$)}, nil}
+    },
+    %{
+      name: "domain-and-use-cases-no-phoenix",
+      comment: "Phoenix and LiveView belong to the web edge only.",
+      from: ~r{^lib/frame/(domain|use_cases|adapters)/},
+      to: {:app, [:phoenix, :phoenix_live_view, :phoenix_html, :phoenix_pubsub]}
     },
     %{
       name: "no-internal-index-imports",
@@ -76,7 +83,11 @@ defmodule Mix.Tasks.Frame.Depcruise do
   @impl true
   def run(_args) do
     Mix.Task.run("compile")
-    Enum.each(@otel_sdk_apps, &Application.load/1)
+
+    Enum.each(
+      @otel_sdk_apps ++ [:phoenix, :phoenix_live_view, :phoenix_html, :phoenix_pubsub],
+      &Application.load/1
+    )
 
     {graph, module_count} = build_graph()
     edges = for {from, tos} <- graph, to <- tos, do: {from, to}

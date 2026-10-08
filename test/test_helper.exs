@@ -1,5 +1,6 @@
 # capture_log: :logger output (e.g. from OtelLogger tests) is only shown for failing tests.
 ExUnit.start(capture_log: true)
 
-# Ecto.Migrator loads the same migration file once per test database.
-Code.put_compiler_option(:ignore_module_conflict, true)
+# The one shared setup: FakeHono listener, Finch, PubSub and the endpoint.
+# Every test then gets its own isolated world (Frame.Test.Portal.start/1).
+:ok = Frame.Test.Portal.start_shared()

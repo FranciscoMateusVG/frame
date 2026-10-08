@@ -6,22 +6,25 @@ defmodule Frame.Integration.ConfidentialityTest do
   spans, logs or error responses — for valid, malformed, scalar and failing
   requests (400/401/403/404/413/429/500/503).
   """
-  use ExUnit.Case, async: false
+  use Frame.Test.PortalCase, async: false
 
   import ExUnit.CaptureLog
 
   alias Frame.Adapters.PrintApi.Memory
   alias Frame.Observability.Observability
   alias Frame.Observability.OtelLogger
-  alias Frame.Test.Ids
-  alias Frame.Test.Portal
 
   defmodule RaisingApi do
     @moduledoc false
-    # A PrintApi whose every call crashes (forces the portal's 500 path).
-    defstruct []
+    # A PrintApi whose calls crash (forces the portal's 500 path); with an
+    # inner API, reads work and only commands crash (a LiveView event).
+    alias Frame.Adapters.PrintApi
+
+    defstruct [:inner]
     def list_orders(_api, _q), do: raise("MARKER-crash-detail")
-    def get_order(_api, _id), do: raise("MARKER-crash-detail")
+    def get_order(%{inner: nil}, _id), do: raise("MARKER-crash-detail")
+    def get_order(%{inner: inner}, id), do: PrintApi.get_order(inner, id)
+    def collect(_api, _id, _input, _pre), do: raise("MARKER-crash-detail")
   end
 
   setup_all do
@@ -139,6 +142,34 @@ defmodule Frame.Integration.ConfidentialityTest do
             headers: [{"origin", p.origin}]
           )
 
+        # The LiveView pages: the order on screen, a command and an upload
+        # over the socket with a marker file name and bytes.
+        o2 =
+          Memory.seed_order(p.memory, [
+            %{
+              title: "Outro",
+              copies: 1,
+              instructions: @instructions,
+              file_name: @filename,
+              bytes: @doc_bytes
+            }
+          ])
+
+        {:ok, view, html} = live(Portal.conn(p), "/orders/#{o2["id"]}")
+        assert html =~ "MARKERINSTRUCAO"
+        view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
+        view |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
+
+        view
+        |> file_input("#quote-form", :file, [
+          %{name: @filename, content: @doc_bytes, type: "application/pdf"}
+        ])
+        |> render_upload(@filename)
+
+        view |> form("#quote-form", %{"valor" => "459,00"}) |> render_submit()
+        html = view |> element("#confirm-quote button", "Confirmar envio") |> render_click()
+        assert html =~ "Orçamento enviado"
+
         send(self(), {:responses, [r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r12 | rs]})
         send(self(), {:session, p.jar["__Host-print_session"], p.csrf, pre_csrf})
       end)
@@ -185,7 +216,9 @@ defmodule Frame.Integration.ConfidentialityTest do
           "getOrder",
           "http.print_api.getOrder",
           "logIn",
-          "submitQuote"
+          "submitQuote",
+          "collectFiles",
+          "live Frame.Web.OrderLive handle_event"
         ],
         do: assert(name in names, name)
 
@@ -200,8 +233,7 @@ defmodule Frame.Integration.ConfidentialityTest do
       )
 
     {p, _} = Portal.login(p)
-    deps = %{p.deps | print_api: %RaisingApi{}}
-    p2 = restart_with(p, deps)
+    p2 = %{p | deps: %{p.deps | print_api: %RaisingApi{}}}
     Frame.Test.Observability.reset(obs)
 
     log =
@@ -223,20 +255,50 @@ defmodule Frame.Integration.ConfidentialityTest do
     refute inspect(spans, limit: :infinity, printable_limit: :infinity) =~ "MARKER"
   end
 
-  # Same session store (so the session cookie stays valid), new router deps.
-  defp restart_with(p, deps) do
-    {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
-    {:ok, port} = :inet.port(socket)
-    :gen_tcp.close(socket)
-
-    {:ok, _} =
-      Bandit.start_link(
-        plug: {Frame.Http.Router, deps},
-        port: port,
-        ip: {127, 0, 0, 1},
-        startup_log: false
+  test "a crashing LiveView logs only the exception type", %{obs: obs} do
+    p =
+      Portal.start(
+        observability: %Observability{logger: OtelLogger.new(), tracer: obs.observability.tracer}
       )
+      |> Portal.signed_in()
 
-    %{p | port: port}
+    o =
+      Memory.seed_order(p.memory, [
+        %{
+          title: "Trabalho",
+          copies: 1,
+          instructions: @instructions,
+          file_name: @filename,
+          bytes: @doc_bytes
+        }
+      ])
+
+    p = %{p | deps: %{p.deps | print_api: %RaisingApi{inner: p.deps.print_api}}}
+    Frame.Test.Observability.reset(obs)
+    Process.flag(:trap_exit, true)
+
+    log =
+      capture_log([level: :debug], fn ->
+        {:ok, view, _html} = live(Portal.conn(p), "/orders/#{o["id"]}")
+        view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
+
+        catch_exit(
+          view
+          |> element("#confirm-collect button", "Confirmar retirada")
+          |> render_click()
+        )
+
+        Process.sleep(100)
+      end)
+
+    assert log =~ "process terminated (RuntimeError)"
+
+    for marker <- ["MARKER", Portal.password(), p.jar["__Host-print_session"]],
+        do: refute(log =~ marker, "crash log leaks #{inspect(marker)}")
+
+    spans = Frame.Test.Observability.get_spans(obs)
+    events = Enum.filter(spans, &(&1.name == "live Frame.Web.OrderLive handle_event"))
+    assert Enum.any?(events, &(&1.attributes[:"error.type"] == "RuntimeError"))
+    refute inspect(spans, limit: :infinity, printable_limit: :infinity) =~ "MARKER"
   end
 end

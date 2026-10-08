@@ -1,4 +1,4 @@
-defmodule Frame.Http.Multipart do
+defmodule Frame.Web.Multipart do
   @moduledoc """
   Strict `multipart/form-data` reader for the supplier uploads (spec §4):
 

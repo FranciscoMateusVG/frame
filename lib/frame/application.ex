@@ -8,7 +8,8 @@ defmodule Frame.Application do
 
     1. the Finch pool for the Incluir API origin,
     2. the session table owner and the login limiter,
-    3. Bandit serving `Frame.Http.Router` with the dependency map.
+    3. the PubSub of the LiveView sockets,
+    4. the Phoenix endpoint (Bandit) with the dependency map.
 
   This is the only module that names concrete adapters. Tests and examples
   build their own dependency maps (`deps/2`) with the in-memory fake.
@@ -20,8 +21,10 @@ defmodule Frame.Application do
   alias Frame.Adapters.PrintApi
   alias Frame.Adapters.SessionStore
   alias Frame.Config
+  alias Frame.Observability.CrashReports
   alias Frame.Observability.Observability
   alias Frame.Observability.OtelLogger
+  alias Frame.Web.LiveTelemetry
 
   @finch Frame.Finch
   @sessions :frame_sessions
@@ -29,6 +32,8 @@ defmodule Frame.Application do
 
   @impl true
   def start(_type, _args) do
+    :ok = CrashReports.install()
+    :ok = LiveTelemetry.attach()
     children = if Application.get_env(:frame, :serve, false), do: serve(), else: []
     Supervisor.start_link(children, strategy: :one_for_one, name: Frame.Supervisor)
   end
@@ -74,11 +79,28 @@ defmodule Frame.Application do
       {Finch, name: @finch, pools: %{config.api_origin => [size: 25, count: 1]}},
       %{id: SessionStore.Memory, start: {SessionStore.Memory, :start_link, [session_opts]}},
       {LoginLimiter.Memory, limiter_opts},
-      {Bandit,
-       plug: {Frame.Http.Router, deps},
-       scheme: :http,
-       port: config.port,
-       thousand_island_options: [shutdown_timeout: 15_000]}
+      {Phoenix.PubSub, name: Frame.PubSub},
+      {Frame.Web.Endpoint, endpoint_options(config, deps, server: true)}
+    ]
+  end
+
+  @doc """
+  The runtime configuration of `Frame.Web.Endpoint`: the dependency map,
+  the exact origin for socket `check_origin`, the public URL and a
+  `secret_key_base` random per boot (a restart already invalidates every
+  session, so nothing signed has to outlive the process).
+  """
+  @spec endpoint_options(Config.t(), map(), keyword()) :: keyword()
+  def endpoint_options(%Config{} = config, deps, opts \\ []) do
+    uri = URI.parse(config.portal_origin)
+
+    [
+      server: Keyword.get(opts, :server, false),
+      http: [port: config.port, thousand_island_options: [shutdown_timeout: 15_000]],
+      url: [scheme: uri.scheme, host: uri.host, port: uri.port],
+      check_origin: [config.portal_origin],
+      secret_key_base: Base.encode64(:crypto.strong_rand_bytes(48)),
+      frame_deps: deps
     ]
   end
 

@@ -1,4 +1,4 @@
-defmodule Frame.Http.Reply do
+defmodule Frame.Web.Reply do
   @moduledoc """
   Response helpers shared by the JSON API and the HTML pages: JSON bodies,
   the error envelope `{error:{code,message,requestId}}` (never echoing

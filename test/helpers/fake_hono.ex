@@ -4,6 +4,11 @@ defmodule Frame.Test.FakeHono do
   (Bandit), backed by `Frame.Adapters.PrintApi.Memory`. Lets the HTTP
   adapter and the whole portal be tested through real sockets.
 
+  One server hosts any number of **tenants** (`tenant/2`): each has its own
+  token, memory and control, and a request is served by the tenant whose
+  token it carries — so async tests share one listener without sharing any
+  state.
+
   It checks the bearer token like the real middleware (401 otherwise) and
   can misbehave on demand (`misbehave/2`): `:redirect`, `:slow`, `:huge`,
   `:drift` (off-contract body), `:html_500`, `:short_body`, `:no_closes`. It records the
@@ -20,20 +25,46 @@ defmodule Frame.Test.FakeHono do
 
   @prefix ["api", "print-portal", "v1"]
 
-  defstruct [:port, :memory, :control, :token]
+  defstruct [:port, :memory, :control, :token, :tenants]
 
-  @doc "Starts a fake on a random port. Returns the handle."
+  @doc "Starts a fake on a random port with one tenant. Returns its handle."
   def start(opts \\ []) do
-    memory = Keyword.get_lazy(opts, :memory, fn -> Memory.new(Keyword.take(opts, [:clock])) end)
-    token = Keyword.get(opts, :token, String.duplicate("s", 48))
-    {:ok, control} = Agent.start_link(fn -> %{mode: nil, headers: [], requests: 0} end)
-    state = %{memory: memory, control: control, token: token}
+    {:ok, tenants} = Agent.start_link(fn -> %{} end)
 
     {:ok, pid} =
-      Bandit.start_link(plug: {__MODULE__, state}, port: 0, ip: {127, 0, 0, 1}, startup_log: false)
+      Bandit.start_link(
+        plug: {__MODULE__, tenants},
+        port: 0,
+        ip: {127, 0, 0, 1},
+        startup_log: false
+      )
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
-    %__MODULE__{port: port, memory: memory, control: control, token: token}
+
+    tenant(
+      %__MODULE__{port: port, tenants: tenants},
+      Keyword.put_new(opts, :token, String.duplicate("s", 48))
+    )
+  end
+
+  @doc """
+  A new tenant on the same server: its own token (random unless given),
+  memory (`:memory` or a fresh one with `:clock`) and control.
+  """
+  def tenant(%__MODULE__{} = hono, opts \\ []) do
+    memory = Keyword.get_lazy(opts, :memory, fn -> Memory.new(Keyword.take(opts, [:clock])) end)
+
+    token =
+      Keyword.get_lazy(opts, :token, fn -> Base.url_encode64(:crypto.strong_rand_bytes(36)) end)
+
+    {:ok, control} = Agent.start(fn -> %{mode: nil, headers: [], requests: 0, commands: []} end)
+
+    Agent.update(
+      hono.tenants,
+      &Map.put(&1, token, %{memory: memory, control: control, token: token})
+    )
+
+    %{hono | memory: memory, control: control, token: token}
   end
 
   def origin(%__MODULE__{port: port}), do: "http://127.0.0.1:#{port}"
@@ -42,16 +73,41 @@ defmodule Frame.Test.FakeHono do
   def last_headers(%__MODULE__{control: c}), do: Agent.get(c, & &1.headers)
   def request_count(%__MODULE__{control: c}), do: Agent.get(c, & &1.requests)
 
+  @doc "The headers (as maps) of every non-GET request this tenant received, in order."
+  def commands(%__MODULE__{control: c}), do: Agent.get(c, & &1.commands)
+
   @impl true
   def init(state), do: state
 
   @impl true
-  def call(conn, state) do
-    Agent.update(state.control, &%{&1 | headers: conn.req_headers, requests: &1.requests + 1})
+  def call(conn, tenants) do
+    case tenant_of(conn, tenants) do
+      nil ->
+        json(conn, 401, err("UNAUTHORIZED", "Credencial inválida."))
 
-    case Agent.get(state.control, & &1.mode) do
-      nil -> serve(conn, state)
-      mode -> misbehave_now(conn, mode, state)
+      state ->
+        Agent.update(state.control, &record(&1, conn))
+
+        case Agent.get(state.control, & &1.mode) do
+          nil -> serve(conn, state)
+          mode -> misbehave_now(conn, mode, state)
+        end
+    end
+  end
+
+  defp record(control, conn) do
+    commands =
+      if conn.method == "GET",
+        do: control.commands,
+        else: control.commands ++ [Map.new(conn.req_headers)]
+
+    %{control | headers: conn.req_headers, requests: control.requests + 1, commands: commands}
+  end
+
+  defp tenant_of(conn, tenants) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token] -> Agent.get(tenants, &Map.get(&1, token))
+      _ -> nil
     end
   end
 

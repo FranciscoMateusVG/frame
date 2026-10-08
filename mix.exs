@@ -37,10 +37,16 @@ defmodule Frame.MixProject do
           Frame.Adapters.PrintApi.Http => [lines: 85, functions: 85],
           Frame.Adapters.SessionStore.Memory => [lines: 90, functions: 90],
           Frame.Adapters.LoginLimiter.Memory => [lines: 90, functions: 90],
-          Frame.Http.Api => [lines: 90, functions: 90],
-          Frame.Http.Pages => [lines: 85, functions: 85],
-          Frame.Http.Security => [lines: 90, functions: 90],
-          Frame.Http.Multipart => [lines: 90, functions: 90],
+          Frame.Web.Edge => [lines: 90, functions: 90],
+          Frame.Web.Security => [lines: 90, functions: 90],
+          Frame.Web.Multipart => [lines: 90, functions: 90],
+          Frame.Web.SessionController => [lines: 90, functions: 90],
+          Frame.Web.PrintController => [lines: 90, functions: 90],
+          Frame.Web.LoginController => [lines: 90, functions: 90],
+          Frame.Web.LiveAuth => [lines: 90, functions: 90],
+          Frame.Web.OrdersLive => [lines: 85, functions: 85],
+          Frame.Web.OrderLive => [lines: 85, functions: 85],
+          Frame.Web.InvoicesLive => [lines: 85, functions: 85],
           Frame.Config => [lines: 90, functions: 90]
         }
       ]
@@ -66,6 +72,9 @@ defmodule Frame.MixProject do
       {:opentelemetry_api, "~> 1.5"},
       {:plug, "~> 1.20"},
       {:bandit, "~> 1.12"},
+      {:phoenix, "~> 1.8"},
+      {:phoenix_live_view, "~> 1.2"},
+      {:phoenix_html, "~> 4.2"},
       # HTTP client to the Incluir Hono API. Never follows redirects.
       {:finch, "~> 0.20"},
       # OTel SDK: optional, only for Frame.Testing (consumers own their SDK setup).
@@ -73,6 +82,8 @@ defmodule Frame.MixProject do
       # Logs SDK (otel_log_handler) — OtelLogger tests only.
       {:opentelemetry_experimental, "~> 0.6.0", only: :test, runtime: false},
       {:stream_data, "~> 1.4", only: [:dev, :test]},
+      # HTML parser behind Phoenix.LiveViewTest (LiveView >= 1.1).
+      {:lazy_html, "~> 0.1", only: :test},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end

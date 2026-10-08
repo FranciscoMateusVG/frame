@@ -43,15 +43,24 @@ defmodule Mix.Tasks.Frame.LintStructure do
           # The composition root (OTP application) and boot configuration.
           file("application.ex"),
           file("config.ex"),
+          # `use Frame.Web, :controller | :live_view | :html`.
+          file("web.ex"),
           dir("domain", flat_ex),
           dir("use_cases", flat_ex),
           # <port>.ex (the behaviour) AND <port>/<impl>.ex (memory, postgres, ...)
           dir("adapters", flat_ex ++ [dir(~r/^#{@snake}$/, flat_ex)]),
           dir("errors", [file(~r/^#{@snake}_error\.ex$/)]),
           dir("observability", flat_ex),
-          # The HTTP edge (Plug): routes, views, browser security. Templates
-          # (`templates/*.html.eex`) are not Elixir sources and not modeled.
-          dir("http", flat_ex),
+          # The Phoenix edge: endpoint, router, plugs, components, browser
+          # security; controllers and LiveViews in their own folders.
+          dir(
+            "web",
+            flat_ex ++
+              [
+                dir("controllers", [file(~r/^#{@snake}_controller\.ex$/)]),
+                dir("live", [file(~r/^#{@snake}_live\.ex$/)])
+              ]
+          ),
           dir("testing", flat_ex)
         ])
       ]),

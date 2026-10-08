@@ -1,4 +1,4 @@
-defmodule Frame.Http.Security do
+defmodule Frame.Web.Security do
   @moduledoc """
   Browser-facing security primitives of the portal (spec §5):
 
@@ -42,7 +42,7 @@ defmodule Frame.Http.Security do
       {"permissions-policy", "camera=(), microphone=(), geolocation=()"},
       {"content-security-policy",
        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " <>
-         "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"},
+         "connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"},
       {"cache-control", "no-store"}
     ])
     |> then(fn conn ->
@@ -97,6 +97,23 @@ defmodule Frame.Http.Security do
       _ -> false
     end
   end
+
+  @doc "The LiveView socket id (PubSub topic) of a session id: `portal_session:<sha256>`."
+  @spec live_socket_id(String.t()) :: String.t()
+  def live_socket_id(session_id),
+    do: "portal_session:" <> Base.encode16(:crypto.hash(:sha256, session_id), case: :lower)
+
+  @doc """
+  Disconnects every live page of a session (logout, login rotation): its
+  LiveView sockets drop at once instead of living on until their next event.
+  """
+  @spec disconnect_live(Plug.Conn.t(), String.t()) :: :ok
+  def disconnect_live(%Plug.Conn{private: %{phoenix_endpoint: endpoint}}, session_id) do
+    _ = endpoint.broadcast(live_socket_id(session_id), "disconnect", %{})
+    :ok
+  end
+
+  def disconnect_live(_conn, _session_id), do: :ok
 
   @doc "Constant-time comparison of a presented CSRF token with the session's."
   @spec csrf_valid?(String.t() | nil, Session.t()) :: boolean()
