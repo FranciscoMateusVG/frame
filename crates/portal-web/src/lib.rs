@@ -117,6 +117,16 @@ async fn catch_panic(State(state): State<Arc<AppState>>, request: Request, next:
     }
 }
 
+// option_env! is evaluated by rustc, never from the running container's env.
+const BUILD_REVISION: &str = match option_env!("BUILD_SHA") {
+    Some(value) if !value.is_empty() => value,
+    _ => "unknown",
+};
+
+async fn version() -> Response {
+    axum::Json(json!({"revision": BUILD_REVISION})).into_response()
+}
+
 async fn healthz() -> Response {
     axum::Json(json!({"status": "ok"})).into_response()
 }
@@ -163,6 +173,7 @@ pub fn app(
         .route("/invoices", get(pages::invoices_page))
         .route("/assets/portal.js", get(assets::script))
         .route("/assets/portal.css", get(assets::style))
+        .route("/version", get(version))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .merge(api::routes())
