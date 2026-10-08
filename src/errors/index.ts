@@ -1,2 +1,9 @@
 export { CatAlreadyExistsError } from './cat-already-exists.error.js';
+export { CsrfFailedError } from './csrf-failed.error.js';
 export { InvalidCatNameError } from './invalid-cat-name.error.js';
+export { InvalidCredentialsError } from './invalid-credentials.error.js';
+export { InvalidRequestError } from './invalid-request.error.js';
+export { LoginRateLimitedError } from './login-rate-limited.error.js';
+export { UnauthenticatedError } from './unauthenticated.error.js';
+export { UpstreamRejectedError } from './upstream-rejected.error.js';
+export { UpstreamUnavailableError } from './upstream-unavailable.error.js';

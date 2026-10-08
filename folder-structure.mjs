@@ -9,7 +9,7 @@
 //
 // WHAT THIS ENFORCES:
 //   • src/ follows the hexagonal layout (domain / use-cases / adapters / errors
-//     / observability / testing) with kebab-case filenames and the conventional
+//     / observability / testing / http) with kebab-case filenames and the conventional
 //     suffixes (.error.ts, .<impl>.ts).
 //   • tests/ mirrors the unit/integration/helpers split with .test.ts suffix.
 //   • examples/, migrations/, and scripts/ follow their respective conventions.
@@ -58,6 +58,12 @@ export const folderStructureConfig = createFolderStructure({
         },
         {
           name: 'testing',
+          children: [{ name: `${KEBAB}.ts` }],
+        },
+        {
+          // Transport + composition root: Hono routes, HTML views, config,
+          // and the runnable portal entrypoint (server.ts).
+          name: 'http',
           children: [{ name: `${KEBAB}.ts` }],
         },
       ],

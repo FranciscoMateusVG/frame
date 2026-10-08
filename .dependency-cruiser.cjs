@@ -19,8 +19,16 @@ module.exports = {
       severity: 'error',
       from: { path: '^src/use-cases/' },
       to: {
-        path: '^src/adapters/.*\\.(postgres|memory|sqlite)',
+        path: '^src/adapters/.*\\.(postgres|memory|sqlite|http)\\.ts$',
       },
+    },
+    {
+      name: 'http-is-outermost',
+      comment:
+        'src/http/ is the transport layer and composition root. Nothing inside domain/, use-cases/, adapters/, errors/ or observability/ may depend on it.',
+      severity: 'error',
+      from: { path: '^src/', pathNot: '^src/http/' },
+      to: { path: '^src/http/' },
     },
     {
       name: 'no-internal-index-imports',

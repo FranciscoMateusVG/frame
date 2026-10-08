@@ -1,0 +1,440 @@
+/**
+ * Server-rendered HTML for the print-shop portal (spec §7). Every dynamic
+ * value goes through hono/html's escaping template; nothing is marked raw
+ * except the constant markup below. No inline scripts or styles (CSP).
+ */
+import { html } from 'hono/html';
+import type { HtmlEscapedString } from 'hono/utils/html';
+import { formatCents } from '../domain/money.js';
+import {
+  CLOSE_STATE_LABELS,
+  canSubmitInvoice,
+  type MonthlyClose,
+  nextCompetence,
+  previousCompetence,
+} from '../domain/monthly-close.js';
+import {
+  availableAction,
+  ORDER_STATUS_LABELS,
+  ORDER_STATUSES,
+  type Order,
+  type OrderPage,
+  type OrderStatus,
+  type PrintFile,
+} from '../domain/print-order.js';
+
+type Html = HtmlEscapedString | Promise<HtmlEscapedString>;
+
+export interface Banner {
+  readonly kind: 'error' | 'info' | 'success';
+  readonly text: string;
+}
+
+function layout(title: string, body: Html, nav?: { csrfToken: string; active: string }): Html {
+  return html`<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title} · Portal da gráfica</title>
+<link rel="stylesheet" href="/assets/portal.css">
+<script src="/assets/portal.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <span class="brand">Portal da gráfica</span>
+  ${
+    nav
+      ? html`<nav>
+    <a href="/orders"${nav.active === 'orders' ? html` aria-current="page"` : ''}>Pedidos</a>
+    <a href="/invoices"${nav.active === 'invoices' ? html` aria-current="page"` : ''}>Notas fiscais</a>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="_csrf" value="${nav.csrfToken}">
+      <button type="submit" class="link">Sair</button>
+    </form>
+  </nav>`
+      : ''
+  }
+</header>
+<main>
+${body}
+</main>
+</body>
+</html>`;
+}
+
+function banner(b: Banner | undefined): Html | string {
+  if (!b) return '';
+  return html`<p class="banner ${b.kind}" role="${b.kind === 'error' ? 'alert' : 'status'}">${b.text}</p>`;
+}
+
+function dateTime(iso: string | null): string {
+  if (!iso) return '—';
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(new Date(iso));
+}
+
+function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1).replace('.', ',')} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
+}
+
+/** Confirmation dialog inside a form; portal.js intercepts the first submit. */
+function confirmDialog(id: string, question: string, confirmLabel: string): Html {
+  return html`<dialog id="${id}" class="confirm">
+  <p>${question}</p>
+  <div class="actions">
+    <button type="submit" name="confirmed" value="1" data-confirmed>${confirmLabel}</button>
+    <button type="button" class="secondary" data-close>Voltar</button>
+  </div>
+</dialog>`;
+}
+
+// ── login ──
+
+export function loginPage(csrfToken: string, b?: Banner): Html {
+  return layout(
+    'Entrar',
+    html`<section class="card narrow">
+  <h1>Entrar</h1>
+  ${banner(b)}
+  <form method="post" action="/login">
+    <input type="hidden" name="_csrf" value="${csrfToken}">
+    <label for="password">Senha</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+    <button type="submit">Entrar</button>
+  </form>
+</section>`,
+  );
+}
+
+// ── order list ──
+
+export interface OrdersView {
+  readonly csrfToken: string;
+  readonly status: OrderStatus | undefined;
+  /** null when the upstream could not be reached. */
+  readonly page: OrderPage | null;
+  readonly cursor: string | undefined;
+  readonly back: readonly string[];
+  readonly banner?: Banner;
+}
+
+function ordersHref(
+  status: OrderStatus | undefined,
+  cursor: string | undefined,
+  back: readonly string[],
+): string {
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  if (cursor) params.set('cursor', cursor);
+  for (const b of back) params.append('back', b);
+  const query = params.toString();
+  return query ? `/orders?${query}` : '/orders';
+}
+
+export function ordersPage(view: OrdersView): Html {
+  const { page, status, cursor, back } = view;
+  const previous =
+    back.length > 0
+      ? ordersHref(status, back[back.length - 1] || undefined, back.slice(0, -1))
+      : null;
+  const next = page?.nextCursor
+    ? ordersHref(status, page.nextCursor, [...back, cursor ?? ''])
+    : null;
+
+  let content: Html | string;
+  if (page === null) {
+    content = html`<p class="empty unavailable" data-state="unavailable">Não foi possível consultar os pedidos agora (serviço indisponível). Use <strong>Atualizar</strong> para tentar de novo.</p>`;
+  } else if (page.items.length === 0) {
+    content = html`<p class="empty" data-state="empty">Nenhum pedido${status ? ' com este status' : ''}.</p>`;
+  } else {
+    content = html`<table class="orders">
+  <thead><tr><th>Referência</th><th>Título</th><th>Status</th><th>Criado em</th><th>Valor aprovado</th><th></th></tr></thead>
+  <tbody>
+  ${page.items.map(
+    (o) => html`<tr>
+    <td data-label="Referência">${o.reference}</td>
+    <td data-label="Título">${o.title}</td>
+    <td data-label="Status"><span class="status ${o.status}">${ORDER_STATUS_LABELS[o.status]}</span></td>
+    <td data-label="Criado em">${dateTime(o.createdAt)}</td>
+    <td data-label="Valor aprovado">${o.approvedAmountCents === null ? '—' : formatCents(o.approvedAmountCents)}</td>
+    <td><a class="button" href="/orders/${encodeURIComponent(o.id)}">Ver pedido</a></td>
+  </tr>`,
+  )}
+  </tbody>
+</table>`;
+  }
+
+  return layout(
+    'Pedidos',
+    html`<section>
+  <h1>Pedidos</h1>
+  ${banner(view.banner)}
+  <form method="get" action="/orders" class="filters">
+    <label for="status">Status</label>
+    <select id="status" name="status">
+      <option value="">Todos</option>
+      ${ORDER_STATUSES.map(
+        (s) =>
+          html`<option value="${s}"${s === status ? html` selected` : ''}>${ORDER_STATUS_LABELS[s]}</option>`,
+      )}
+    </select>
+    <button type="submit">Atualizar</button>
+  </form>
+  ${content}
+  <nav class="pager">
+    ${previous ? html`<a class="button secondary" href="${previous}">Anterior</a>` : html`<span class="button secondary disabled" aria-disabled="true">Anterior</span>`}
+    ${next ? html`<a class="button secondary" href="${next}">Próxima</a>` : html`<span class="button secondary disabled" aria-disabled="true">Próxima</span>`}
+  </nav>
+</section>`,
+    { csrfToken: view.csrfToken, active: 'orders' },
+  );
+}
+
+// ── order detail ──
+
+/** Form state for an action: reused verbatim after an ambiguous failure. */
+export interface ActionForm {
+  readonly idempotencyKey: string;
+  readonly etag: string;
+  readonly amountText?: string;
+}
+
+export interface OrderView {
+  readonly csrfToken: string;
+  readonly order: Order;
+  readonly form: ActionForm;
+  readonly banner?: Banner;
+}
+
+function fileLine(href: string, file: PrintFile, label: string): Html {
+  return html`<div class="file">
+  <a class="button" href="${href}" download>${label}</a>
+  <span class="filename">${file.name}</span>
+  <span class="meta">${file.mime} · ${fileSize(file.bytes)}</span>
+  <code class="sha" title="SHA-256">${file.sha256}</code>
+</div>`;
+}
+
+function hiddenCommon(view: OrderView): Html {
+  return html`<input type="hidden" name="_csrf" value="${view.csrfToken}">
+  <input type="hidden" name="idempotencyKey" value="${view.form.idempotencyKey}">
+  <input type="hidden" name="etag" value="${view.form.etag}">`;
+}
+
+function orderAction(view: OrderView): Html | string {
+  const { order } = view;
+  const base = `/orders/${encodeURIComponent(order.id)}`;
+  const quote = order.currentQuote;
+  const quoteBlock = quote
+    ? html`<div class="quote">
+  <h3>Orçamento ${quote.revision}</h3>
+  <p>Valor: <strong>${formatCents(quote.amountCents)}</strong> · enviado em ${dateTime(quote.submittedAt)}</p>
+  ${quote.decision === 'rejected' && quote.rejectionReason ? html`<p class="banner error">Orçamento rejeitado. Motivo: ${quote.rejectionReason}</p>` : ''}
+  ${fileLine(`/api/print/v1${base}/quotes/${encodeURIComponent(quote.id)}/file`, quote.document, 'Baixar orçamento')}
+</div>`
+    : '';
+
+  switch (availableAction(order)) {
+    case 'collect':
+      return html`<form method="post" action="${base}/collected" class="action" data-confirm="confirm-collect">
+  ${hiddenCommon(view)}
+  <input type="hidden" name="revision" value="${order.revision}">
+  <label class="check"><input type="checkbox" name="checked" value="1" required> Conferi todos os arquivos desta revisão</label>
+  <button type="submit">Arquivos retirados</button>
+  ${confirmDialog('confirm-collect', `Confirmar a retirada dos arquivos da revisão ${order.revision}?`, 'Confirmar retirada')}
+</form>`;
+    case 'quote':
+      return html`${quoteBlock}
+<form method="post" action="${base}/quotes" enctype="multipart/form-data" class="action" data-confirm="confirm-quote">
+  <h3>${order.status === 'quote_rejected' ? 'Enviar novo orçamento' : 'Enviar orçamento'}</h3>
+  ${hiddenCommon(view)}
+  <input type="hidden" name="orderRevision" value="${order.revision}">
+  <label for="amount">Valor do orçamento</label>
+  <input id="amount" name="amount" inputmode="decimal" placeholder="R$ 0,00" required value="${view.form.amountText ?? ''}">
+  <label for="quote-file">Arquivo do orçamento</label>
+  <input id="quote-file" name="file" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required>
+  <p class="hint">PDF, JPEG, PNG ou WebP, até 5 MB.</p>
+  <button type="submit">${order.status === 'quote_rejected' ? 'Enviar novo orçamento' : 'Enviar orçamento'}</button>
+  ${confirmDialog('confirm-quote', 'Confirmar o envio do orçamento ao Financeiro?', 'Confirmar envio')}
+</form>`;
+    case 'print':
+      return html`${quoteBlock}
+<p class="banner success">Orçamento aprovado${order.approvedAmountCents !== null ? html`: <strong>${formatCents(order.approvedAmountCents)}</strong>` : ''}.</p>
+<form method="post" action="${base}/printed" class="action" data-confirm="confirm-print">
+  ${hiddenCommon(view)}
+  <input type="hidden" name="revision" value="${order.revision}">
+  <input type="hidden" name="quoteId" value="${quote?.id ?? ''}">
+  <button type="submit">Marcar como impresso</button>
+  ${confirmDialog('confirm-print', 'Confirmar que este pedido foi impresso?', 'Confirmar impressão')}
+</form>`;
+    default:
+      if (order.status === 'quote_pending') {
+        return html`${quoteBlock}<p class="banner info">Aguardando aprovação do Financeiro.</p>`;
+      }
+      if (order.status === 'printed') {
+        return html`${quoteBlock}<p class="banner success">Impresso em ${dateTime(order.printedAt)}.</p>`;
+      }
+      if (order.status === 'cancelled') {
+        return html`<p class="banner error">Pedido cancelado${order.cancellationReason ? html`. Motivo: ${order.cancellationReason}` : ''}.</p>`;
+      }
+      return quoteBlock;
+  }
+}
+
+export function orderPage(view: OrderView): Html {
+  const { order } = view;
+  const api = `/api/print/v1/orders/${encodeURIComponent(order.id)}`;
+  return layout(
+    `Pedido ${order.reference}`,
+    html`<section>
+  <p><a href="/orders">← Pedidos</a></p>
+  <h1>${order.reference} · ${order.title}</h1>
+  ${banner(view.banner)}
+  <dl class="facts">
+    <dt>Status</dt><dd><span class="status ${order.status}">${ORDER_STATUS_LABELS[order.status]}</span></dd>
+    <dt>Revisão</dt><dd>${order.revision}</dd>
+    <dt>Criado em</dt><dd>${dateTime(order.createdAt)}</dd>
+    <dt>Retirado em</dt><dd>${dateTime(order.collectedAt)}</dd>
+    <dt>Impresso em</dt><dd>${dateTime(order.printedAt)}</dd>
+  </dl>
+  <p><a class="button secondary" href="/orders/${encodeURIComponent(order.id)}">Consultar novamente</a></p>
+  <h2>Arquivos</h2>
+  <ol class="jobs">
+  ${order.jobs.map(
+    (job) => html`<li class="job">
+    <h3>${job.title}</h3>
+    <p><strong>Cópias:</strong> ${job.copies}</p>
+    <p><strong>Instruções de impressão:</strong></p>
+    <p class="instructions">${job.instructions}</p>
+    ${order.status === 'cancelled' ? '' : fileLine(`${api}/files/${encodeURIComponent(job.file.id)}`, job.file, 'Baixar arquivo')}
+  </li>`,
+  )}
+  </ol>
+  <h2>Andamento</h2>
+  ${orderAction(view)}
+</section>`,
+    { csrfToken: view.csrfToken, active: 'orders' },
+  );
+}
+
+/** Order page when the upstream cannot be read at all. */
+export function orderUnavailablePage(csrfToken: string, orderId: string, b: Banner): Html {
+  return layout(
+    'Pedido',
+    html`<section>
+  <p><a href="/orders">← Pedidos</a></p>
+  <h1>Pedido</h1>
+  ${banner(b)}
+  <p><a class="button" href="/orders/${encodeURIComponent(orderId)}">Consultar novamente</a></p>
+</section>`,
+    { csrfToken, active: 'orders' },
+  );
+}
+
+// ── invoices ──
+
+export interface InvoicesView {
+  readonly csrfToken: string;
+  readonly competence: string;
+  readonly currentCompetence: string;
+  /** null = upstream route not available yet (or unreachable, see banner). */
+  readonly close: MonthlyClose | null;
+  readonly form: ActionForm | null;
+  readonly unavailable?: 'not_deployed' | 'down';
+  readonly banner?: Banner;
+}
+
+function lastDayLabel(competence: string): string {
+  const [year = 0, month = 1] = competence.split('-').map(Number);
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${String(last).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+}
+
+export function invoicesPage(view: InvoicesView): Html {
+  const { close, competence } = view;
+  const api = `/api/print/v1/monthly-closes/${encodeURIComponent(competence)}`;
+  let content: Html | string;
+  if (view.unavailable === 'not_deployed') {
+    content = html`<p class="empty" data-state="unavailable">Notas fiscais ainda indisponíveis.</p>`;
+  } else if (!close) {
+    content = html`<p class="empty unavailable" data-state="unavailable">Não foi possível consultar o fechamento agora (serviço indisponível). Tente novamente.</p>`;
+  } else {
+    const divergent =
+      close.declaredTotalCents !== null && close.declaredTotalCents !== close.expectedTotalCents;
+    content = html`<dl class="facts">
+  <dt>Situação</dt><dd><span class="status close-${close.state}">${CLOSE_STATE_LABELS[close.state]}</span></dd>
+  <dt>Total calculado</dt><dd><strong>${formatCents(close.expectedTotalCents)}</strong></dd>
+  ${close.declaredTotalCents !== null ? html`<dt>Valor declarado na NF</dt><dd${divergent ? html` class="divergent"` : ''}>${formatCents(close.declaredTotalCents)}${divergent ? ' — diverge do total calculado' : ''}</dd>` : ''}
+  ${close.submittedAt ? html`<dt>Enviada em</dt><dd>${dateTime(close.submittedAt)}</dd>` : ''}
+  ${close.acceptedAt ? html`<dt>Aceita em</dt><dd>${dateTime(close.acceptedAt)}</dd>` : ''}
+</dl>
+${close.periodClosed ? '' : html`<p class="banner info">Competência em andamento: a NF só pode ser enviada depois do encerramento do mês (${lastDayLabel(competence)}).</p>`}
+${close.state === 'submitted' ? html`<p class="banner info">Aguardando conferência.</p>` : ''}
+${close.state === 'rejected' && close.rejectionReason ? html`<p class="banner error">NF rejeitada. Motivo: ${close.rejectionReason}</p>` : ''}
+${close.state === 'accepted' ? html`<p class="banner success">NF aceita pelo Financeiro.</p>` : ''}
+${close.document ? fileLine(`${api}/invoice`, close.document, 'Baixar NF') : ''}
+<h2>Pedidos da competência</h2>
+${
+  close.items.length === 0
+    ? html`<p class="empty" data-state="empty">Nenhum pedido impresso nesta competência.</p>`
+    : html`<table class="orders">
+  <thead><tr><th>Referência</th><th>Impresso em</th><th>Valor aprovado</th></tr></thead>
+  <tbody>${close.items.map(
+    (i) =>
+      html`<tr><td data-label="Referência"><a href="/orders/${encodeURIComponent(i.orderId)}">${i.reference}</a></td><td data-label="Impresso em">${dateTime(i.printedAt)}</td><td data-label="Valor aprovado">${formatCents(i.amountCents)}</td></tr>`,
+  )}</tbody>
+  <tfoot><tr><th colspan="2">Total calculado</th><td>${formatCents(close.expectedTotalCents)}</td></tr></tfoot>
+</table>`
+}
+${
+  canSubmitInvoice(close) && view.form
+    ? html`<form method="post" action="/invoices/${encodeURIComponent(competence)}" enctype="multipart/form-data" class="action" data-confirm="confirm-invoice">
+  <h2>${close.state === 'rejected' ? 'Enviar nova NF' : 'Enviar NF'}</h2>
+  <input type="hidden" name="_csrf" value="${view.csrfToken}">
+  <input type="hidden" name="idempotencyKey" value="${view.form.idempotencyKey}">
+  <input type="hidden" name="etag" value="${view.form.etag}">
+  <label for="declared">Valor total da NF</label>
+  <input id="declared" name="amount" inputmode="decimal" placeholder="R$ 0,00" required value="${view.form.amountText ?? ''}">
+  <label for="invoice-file">Arquivo da NF</label>
+  <input id="invoice-file" name="file" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required>
+  <p class="hint">PDF, JPEG, PNG ou WebP, até 5 MB. O valor deve ser igual ao total calculado.</p>
+  <button type="submit">Enviar NF</button>
+  ${confirmDialog('confirm-invoice', `Confirmar o envio da NF de ${competence}?`, 'Confirmar envio')}
+</form>`
+    : ''
+}`;
+  }
+
+  return layout(
+    'Notas fiscais',
+    html`<section>
+  <h1>Notas fiscais</h1>
+  ${banner(view.banner)}
+  <form method="get" action="/invoices" class="filters">
+    <label for="competence">Competência</label>
+    <input id="competence" name="competence" type="month" value="${competence}" max="${view.currentCompetence}" required>
+    <button type="submit">Consultar</button>
+  </form>
+  <nav class="pager">
+    <a class="button secondary" href="/invoices?competence=${previousCompetence(competence)}">Mês anterior</a>
+    ${competence < view.currentCompetence ? html`<a class="button secondary" href="/invoices?competence=${nextCompetence(competence)}">Próximo mês</a>` : ''}
+  </nav>
+  ${content}
+</section>`,
+    { csrfToken: view.csrfToken, active: 'invoices' },
+  );
+}
+
+export function errorPage(title: string, b: Banner, csrfToken?: string): Html {
+  return layout(
+    title,
+    html`<section class="card narrow"><h1>${title}</h1>${banner(b)}<p><a href="/orders">Voltar aos pedidos</a></p></section>`,
+    csrfToken ? { csrfToken, active: '' } : undefined,
+  );
+}

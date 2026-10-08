@@ -32,6 +32,13 @@
     }
   },
   "files": {
-    "includes": ["**", "!**/dist", "!**/node_modules", "!**/coverage", "!**/*.generated.ts"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/coverage",
+      "!**/*.generated.ts",
+      "!tests/helpers/print-portal-v1*.json"
+    ]
   }
 }
