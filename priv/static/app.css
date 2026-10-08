@@ -157,6 +157,8 @@ input[type="file"] { font: inherit; padding: 0.4rem 0; max-width: 100%; }
   .orders td { border: 0; padding: 0.2rem 0.5rem; display: flex; justify-content: space-between; gap: 1rem; }
   .orders td::before { content: attr(data-label); color: var(--ink-soft); font-size: 0.9rem; }
   .orders td.orders__action { justify-content: flex-start; padding-top: 0.5rem; }
+  .orders td > * { text-align: right; min-width: 0; }
+  .orders .status { white-space: normal; }
   .orders td.orders__action::before { content: none; }
   .orders tfoot tr { display: flex; justify-content: space-between; padding: 0.6rem 0.9rem; }
   .orders tfoot th, .orders tfoot td { display: inline; padding: 0; width: auto; }

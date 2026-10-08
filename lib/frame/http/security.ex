@@ -36,7 +36,7 @@ defmodule Frame.Http.Security do
     |> merge_resp_headers([
       {"x-content-type-options", "nosniff"},
       {"x-frame-options", "DENY"},
-      {"referrer-policy", "no-referrer"},
+      {"referrer-policy", "same-origin"},
       {"cross-origin-opener-policy", "same-origin"},
       {"cross-origin-resource-policy", "same-origin"},
       {"permissions-policy", "camera=(), microphone=(), geolocation=()"},

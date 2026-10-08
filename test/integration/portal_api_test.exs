@@ -562,6 +562,10 @@ defmodule Frame.Integration.PortalApiTest do
     {_p, r} = Portal.get(p, "/api/session", headers: [{"origin", "http://evil.example"}])
     assert [_] = Portal.header(r, "x-request-id")
     assert Portal.header(r, "x-frame-options") == ["DENY"]
+    # Regression: with `no-referrer`, Chromium sends `Origin: null` on
+    # same-origin form posts and every HTML form was refused (403).
+    # `same-origin` keeps the real Origin and leaks nothing cross-site.
+    assert Portal.header(r, "referrer-policy") == ["same-origin"]
     assert [csp] = Portal.header(r, "content-security-policy")
     assert csp =~ "frame-ancestors 'none'"
     assert Portal.header(r, "access-control-allow-origin") == []
