@@ -37,14 +37,14 @@ def secret_reader():
     oidc_url += ("&" if "?" in oidc_url else "?") + urllib.parse.urlencode({"audience": audience})
     jwt = json_request(oidc_url, headers={"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})["value"]
     base = os.environ["INFISICAL_URL"].rstrip("/")
-    assert base == "http://100.102.73.112:3005"
+    assert urllib.parse.urlsplit(base).scheme in ("http", "https")
     auth = json_request(base + "/api/v1/auth/oidc-auth/login", {
         "identityId": os.environ["INFISICAL_IDENTITY_ID"], "jwt": jwt})
     headers = {"Authorization": "Bearer " + auth["accessToken"]}
     project = os.environ["INFISICAL_PROJECT_ID"]
-    assert project == "a6731202-78c1-47b0-b440-7175362284d5"
+    assert project and os.environ["INFISICAL_ENVIRONMENT"] == "staging"
     # A nonexistent key proves authorization denial without fetching real prod data.
-    for denied_project, denied_env in [(project, "prod"), ("b4a65c24-dd50-4e93-b323-41d472e7cf46", "prod")]:
+    for denied_project, denied_env in [(project, "prod"), (os.environ["INFISICAL_DENIED_PROJECT_ID"], "prod")]:
         query = urllib.parse.urlencode({"workspaceId": denied_project, "environment": denied_env, "secretPath": "/"})
         try:
             json_request(base + "/api/v3/secrets/raw/TTP_SCOPE_DENIAL_PROBE?" + query, headers=headers)
@@ -73,7 +73,9 @@ def deploy(ctx, origin):
     read = secret_reader()
     hook = read("DOKPLOY_WEBHOOK_" + ctx["variant"].upper())
     parsed = urllib.parse.urlsplit(hook)
-    assert parsed.scheme == "http" and parsed.netloc == "100.85.254.44:3000"
+    allowed = urllib.parse.urlsplit(os.environ["DOKPLOY_WEBHOOK_ORIGIN"])
+    assert parsed.scheme == allowed.scheme and parsed.netloc == allowed.netloc
+    assert parsed.scheme in ("http", "https")
     assert parsed.path.startswith("/api/deploy/compose/") and not parsed.query
     result = {"requested_sha": ctx["source_sha"], "requested_at": now(),
         "deployment_id": None, "remote_image_id": None, "finished_at": None,

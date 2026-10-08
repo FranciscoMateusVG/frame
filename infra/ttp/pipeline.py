@@ -115,7 +115,7 @@ def init():
     toolchains = [capture(cmd) for cmd in versions[kind]]
     cache_paths = {
         "ts": [capture(["pnpm", "store", "path"])],
-        "rust": [str(Path.home() / ".cargo/registry"), str(Path.home() / ".cargo/git"), "target"],
+        "rust": [str(Path(os.environ.get("CARGO_HOME", str(Path.home()/".cargo"))) / "registry"), str(Path(os.environ.get("CARGO_HOME", str(Path.home()/".cargo"))) / "git"), os.environ.get("CARGO_TARGET_DIR", "target")],
         "phoenix": ["deps", "_build"],
     }[kind]
     fake_sha = os.environ.get("TTP_FAKE_SHA", "")
@@ -151,8 +151,6 @@ def run(stage):
     try:
         if stage in COMMANDS[ctx["variant"]]:
             cmd = COMMANDS[ctx["variant"]][stage]
-            if stage == "tests":
-                cmd = "python3 infra/ttp/test_pipeline.py && " + cmd
             result, seen = execute(["nice", "-n", "10", "bash", "-eo", "pipefail", "-c", cmd])
             contention = bool(seen)
         elif stage == "image-build":
@@ -180,12 +178,37 @@ def run(stage):
     return result
 
 
+def resume():
+    ctx = load("context")
+    assert ctx["source_sha"] == os.environ["GITHUB_SHA"] == capture(["git", "rev-parse", "HEAD"])
+    assert ctx["event"] == "push" and ctx["repo"] == os.environ["GITHUB_REPOSITORY"]
+    assert ctx["run_id"] == os.environ["GITHUB_RUN_ID"]
+    assert ctx["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"]
+    assert ctx["variant"] == variant()
+    assert all(load(s)["status"] == "success" for s in STAGES[:4])
+    save("checks-report", load("ttp-timings"))
+
+
+def cleanup():
+    # Only this run's known image tag. Never prune shared caches/images/volumes.
+    ctx = load("context")
+    if ctx is None: return
+    assert ctx["run_id"] == os.environ["GITHUB_RUN_ID"]
+    assert ctx["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"]
+    assert ctx["variant"] == variant()
+    tag = f'frame-ttp-{ctx["variant"]}:{ctx["run_id"]}-{ctx["run_attempt"]}'
+    exists = subprocess.run(["docker", "image", "inspect", tag], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL).returncode == 0
+    if exists: subprocess.run(["docker", "image", "rm", tag], check=True)
+    save("image-cleanup", {"completed_at": now(), "status": "removed" if exists else "absent"})
+
+
 def report():
     data = load("context", {"schema_version": 1, "setup_failed": True})
     data["stages"] = [load(s, {"id": s, "status": "skipped"}) for s in STAGES]
     data["comparison_valid"] = not data.get("setup_failed", False) and not any(
         s.get("external_contention") for s in data["stages"])
-    data["cache_hit"] = os.environ.get("TTP_CACHE_HIT", "unknown")
+    data["cache_hit"] = os.environ.get("TTP_CACHE_HIT", (load("checks-report") or {}).get("cache_hit", "unknown"))
     data["job_status_at_report"] = os.environ.get("TTP_JOB_STATUS")
     data["image"] = load("image")
     data["deployment"] = load("deployment")
@@ -196,25 +219,28 @@ def report():
     # GitHub's authoritative timestamps include queue/setup separately from stages.
     try:
         url = f'https://api.github.com/repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
-        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
-            "Accept": "application/vnd.github+json"})
+        headers = {"Accept": "application/vnd.github+json"}
+        if os.environ.get("GH_TOKEN"):
+            headers["Authorization"] = "Bearer " + os.environ["GH_TOKEN"]
+        req = urllib.request.Request(url, headers=headers)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(req, timeout=20) as response:
             metadata = json.load(response)
         data["workflow_created_at"] = metadata["created_at"]
         data["workflow_started_at"] = metadata.get("run_started_at")
         jobs_url = url + "/attempts/" + os.environ["GITHUB_RUN_ATTEMPT"] + "/jobs"
-        req = urllib.request.Request(jobs_url, headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
-            "Accept": "application/vnd.github+json"})
+        req = urllib.request.Request(jobs_url, headers=headers)
         with opener.open(req, timeout=20) as response:
             jobs = json.load(response)["jobs"]
-        job = next(j for j in jobs if j["name"] == "ttp")
+        job = next(j for j in jobs if j["name"] == os.environ["GITHUB_JOB"])
         data["github_job"] = {"started_at": job["started_at"], "completed_at": job["completed_at"],
             "steps": [{k: step.get(k) for k in ("name", "started_at", "completed_at", "conclusion")}
                       for step in job["steps"]]}
     except Exception:
         data["github_metadata_status"] = "unavailable"
-    data["limits"] = ["CI image is not the image rebuilt by Dokploy",
+    data["checks_job"] = load("checks-report")
+    data["image_cleanup"] = load("image-cleanup")
+    data["limits"] = ["GitHub concurrency may cancel pending runs; retain cancellation metadata, not replacement samples","CI image is not the image rebuilt by Dokploy",
         "Webhook does not expose deployment ID, remote image ID, or internal finishedAt",
         "Artifact upload and workflow completion occur after this report; retain GitHub run metadata",
         "Runner death/offline can prevent artifact publication; missing evidence is not success"]
@@ -226,6 +252,8 @@ if __name__ == "__main__":
         if sys.argv[1] == "init": init()
         elif sys.argv[1] == "run": sys.exit(run(sys.argv[2]))
         elif sys.argv[1] == "report": report()
+        elif sys.argv[1] == "resume": resume()
+        elif sys.argv[1] == "cleanup": cleanup()
         else: raise ValueError("unsupported operation")
     except Exception as error:
         # No exception repr/traceback: downstream HTTP failures can contain URLs/tokens.
