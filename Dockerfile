@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Print-shop portal (Elixir) — production image for Dokploy.
 #
 #   docker build -t print-portal-elixir .
@@ -27,9 +28,40 @@ COPY config config
 COPY lib lib
 COPY priv priv
 COPY rel rel
-RUN mix compile --warnings-as-errors && mix release print_portal \
- # Readable by the non-root runtime user whatever the checkout's file modes.
- && chmod -R a+rX _build/prod/rel/print_portal
+# CI supplies BUILD_SHA. Dokploy's public checkout supplies only filtered Git metadata.
+# The readonly context mount also supports worktrees/no .git: never follow a pointer.
+ARG BUILD_SHA
+RUN --mount=type=bind,target=/source,readonly <<'SH'
+set -eu
+derived=
+if [ -d /source/.git ] && [ -f /source/.git/HEAD ]; then
+  test ! -L /source/.git/HEAD
+  head=$(cat /source/.git/HEAD)
+  case "$head" in
+    'ref: '*)
+      ref=${head#ref: }
+      printf '%s\n' "$ref" | grep -Eq '^refs/[A-Za-z0-9._/-]+$'
+      case "$ref" in *..*|*//*) exit 1 ;; esac
+      if [ -f "/source/.git/$ref" ]; then
+        test ! -L "/source/.git/$ref"
+        derived=$(cat "/source/.git/$ref")
+      elif [ -f /source/.git/packed-refs ]; then
+        test ! -L /source/.git/packed-refs
+        derived=$(awk -v ref="$ref" '$2 == ref { print $1; exit }' /source/.git/packed-refs)
+      fi
+      ;;
+    *) derived=$head ;;
+  esac
+  printf '%s\n' "$derived" | grep -Eq '^[0-9a-f]{40}$' || { echo 'Invalid build revision metadata' >&2; exit 1; }
+fi
+if [ -n "${BUILD_SHA:-}" ] && [ -n "$derived" ] && [ "$BUILD_SHA" != "$derived" ]; then
+  echo 'BUILD_SHA disagrees with checkout metadata' >&2
+  exit 1
+fi
+export BUILD_SHA="${BUILD_SHA:-${derived:-unknown}}"
+mix compile --warnings-as-errors && mix release print_portal
+chmod -R a+rX _build/prod/rel/print_portal
+SH
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM debian:${DEBIAN_VERSION} AS runtime
@@ -46,6 +78,7 @@ ENV LANG=C.UTF-8 \
 WORKDIR /app
 COPY --from=build --chown=root:root /app/_build/prod/rel/print_portal ./
 
+RUN test -z "$(find /app -name .git -print -quit)"
 USER portal
 EXPOSE 4000
 
