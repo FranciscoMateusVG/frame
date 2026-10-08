@@ -187,6 +187,44 @@ To fork, rename workspace packages, replace the Cat domain/port/use-case/adapter
 tests and migrations, update architectural allowlists, regenerate SQLx metadata,
 and adapt all three examples. Keep the workflow, boundaries and gate.
 
+## Print portal (`print-portal`)
+
+The print-shop portal (spec `print-portal.md` §4.3/§4.5/§5/§7) is built on
+these rails, next to the Cat example. It is a BFF that renders server-side
+HTML. It has **no database and no object storage**. Its only dependency is the
+Incluir Hono `/api/print-portal/v1` service API, reached with a server-only
+bearer token. Sessions are kept in memory.
+
+```text
+crates/portal-domain/     frozen upstream DTOs (strict serde + schema checks), cents/BRL, competence, filenames
+crates/portal-port/       PrintApi trait (the upstream port), ApiError, Preconditions, Download
+crates/portal-use-cases/  session registry, login limiter, login/logout, one use case per print operation
+crates/portal-memory/     in-memory upstream fake: ETag/If-Match CAS, idempotency, state machine, closes
+crates/portal-hono/       real reqwest adapter: fixed origin, no redirects, strict parsing, timeouts
+crates/portal-web/        axum router, maud pages, JSON BFF, cookies/CSRF; `print-portal` binary
+```
+
+Run it (all configuration comes from the environment; missing or invalid
+values exit with code 2 and name the variable, never its value):
+
+```sh
+PRINT_PORTAL_PASSWORD=… INCLUIR_PRINT_SERVICE_TOKEN=… \
+INCLUIR_PRINT_API_ORIGIN=https://hono.example PRINT_PORTAL_ORIGIN=https://grafica.example \
+PRINT_PORTAL_BIND=127.0.0.1:4000 cargo run --release -p frame-portal-web --bin print-portal
+```
+
+Optional settings: `PRINT_PORTAL_SESSION_IDLE_SECONDS` (default 1800),
+`PRINT_PORTAL_SESSION_ABSOLUTE_SECONDS` (default 28800) and
+`PRINT_PORTAL_TRUSTED_PROXIES` (comma-separated IPs; without it,
+`X-Forwarded-For` is ignored). The binary serves `/healthz` and `/readyz`;
+`/readyz` probes the upstream using the token but never exposes it.
+
+The tests run the shared `PrintApi` conformance suite against the memory fake,
+and against the real HTTP adapter through a fake Hono on a socket. The BFF is
+exercised end to end over real sockets (`tests/portal_*.rs`). For the black-box
+run against a live Incluir, see `examples/src/bin/portal_e2e.rs`. Benchmark
+commands are listed in [BENCHMARK.md](BENCHMARK.md#print-portal-benchmark-scope).
+
 ## Stack
 
 Rust stable · Cargo workspace · PostgreSQL 16 · SQLx compile-time macros/offline

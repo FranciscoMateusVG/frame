@@ -1,0 +1,25 @@
+[package]
+name = "frame-portal-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "print-portal"
+path = "src/main.rs"
+
+[dependencies]
+frame-portal-domain.workspace = true
+frame-portal-port.workspace = true
+frame-portal-use-cases.workspace = true
+frame-portal-hono.workspace = true
+frame-observability.workspace = true
+axum.workspace = true
+maud.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+getrandom.workspace = true
+uuid.workspace = true

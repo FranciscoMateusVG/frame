@@ -20,6 +20,12 @@ const CRATES: &[&str] = &[
     "postgres",
     "frame",
     "testing",
+    "portal-domain",
+    "portal-port",
+    "portal-use-cases",
+    "portal-memory",
+    "portal-hono",
+    "portal-web",
 ];
 fn allowed(name: &str) -> &[&str] {
     match name {
@@ -60,6 +66,64 @@ fn allowed(name: &str) -> &[&str] {
             "frame-postgres",
         ],
         "frame-testing" => &["frame-observability", "opentelemetry", "opentelemetry_sdk"],
+        // Print portal (BFF): pure domain → port → use cases; adapters and
+        // the web composition root are leaves. No database, no blob store.
+        "frame-portal-domain" => &["chrono", "serde", "serde_json"],
+        "frame-portal-port" => &[
+            "frame-portal-domain",
+            "async-trait",
+            "bytes",
+            "futures-util",
+        ],
+        "frame-portal-use-cases" => &[
+            "frame-portal-domain",
+            "frame-portal-port",
+            "frame-observability",
+            "opentelemetry",
+            "chrono",
+            "serde_json",
+            "sha2",
+            "subtle",
+        ],
+        "frame-portal-memory" => &[
+            "frame-portal-domain",
+            "frame-portal-port",
+            "frame-observability",
+            "opentelemetry",
+            "async-trait",
+            "bytes",
+            "chrono",
+            "futures-util",
+            "sha2",
+            "uuid",
+        ],
+        "frame-portal-hono" => &[
+            "frame-portal-domain",
+            "frame-portal-port",
+            "frame-observability",
+            "opentelemetry",
+            "async-trait",
+            "bytes",
+            "futures-util",
+            "reqwest",
+            "serde",
+            "serde_json",
+        ],
+        "frame-portal-web" => &[
+            "frame-portal-domain",
+            "frame-portal-port",
+            "frame-portal-use-cases",
+            "frame-portal-hono",
+            "frame-observability",
+            "axum",
+            "maud",
+            "tokio",
+            "chrono",
+            "serde",
+            "serde_json",
+            "getrandom",
+            "uuid",
+        ],
         _ => &[],
     }
 }
@@ -119,6 +183,8 @@ pub fn check() -> Result<()> {
                 "Cargo.toml",
                 "unit.rs",
                 "integration.rs",
+                "portal_unit.rs",
+                "portal_integration.rs",
                 "unit",
                 "integration",
                 "helpers",
@@ -245,8 +311,15 @@ fn check_sources(path: &Path) -> Result<()> {
                 )
                 .into());
             }
-            if path.ends_with("domain")
-                && ((p[0].starts_with("frame_") && p[0] != "frame_domain")
+            let domain = if path.ends_with("domain") {
+                Some("frame_domain")
+            } else if path.ends_with("portal-domain") {
+                Some("frame_portal_domain")
+            } else {
+                None
+            };
+            if let Some(own) = domain
+                && ((p[0].starts_with("frame_") && p[0] != own)
                     || (["std", "core"].contains(&p[0].as_str())
                         && p.get(1).is_some_and(|s| {
                             ["fs", "net", "io", "process", "thread", "time"].contains(&s.as_str())
@@ -258,6 +331,15 @@ fn check_sources(path: &Path) -> Result<()> {
                 && ["frame_memory", "frame_postgres"].contains(&p[0].as_str())
             {
                 return Err("use-case imports concrete adapter".into());
+            }
+            if path.ends_with("portal-use-cases")
+                && ["frame_portal_memory", "frame_portal_hono"].contains(&p[0].as_str())
+            {
+                return Err("portal use case imports concrete adapter".into());
+            }
+            // The production composition root never wires the in-memory fake.
+            if path.ends_with("portal-web") && p[0] == "frame_portal_memory" {
+                return Err("portal web imports the in-memory upstream fake".into());
             }
             if name != "lib" {
                 let module = if ["crate", "super", "self"].contains(&p[0].as_str()) {

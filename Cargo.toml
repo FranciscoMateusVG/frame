@@ -29,3 +29,17 @@ frame-memory = { path = "crates/memory" }
 frame-postgres = { path = "crates/postgres" }
 frame = { path = "crates/frame" }
 frame-testing = { path = "crates/testing" }
+frame-portal-domain = { path = "crates/portal-domain" }
+frame-portal-port = { path = "crates/portal-port" }
+frame-portal-use-cases = { path = "crates/portal-use-cases" }
+frame-portal-memory = { path = "crates/portal-memory" }
+frame-portal-hono = { path = "crates/portal-hono" }
+frame-portal-web = { path = "crates/portal-web" }
+axum = { version = "0.8", features = ["multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls"] }
+maud = { version = "0.27", features = ["axum"] }
+sha2 = "0.10"
+subtle = "2"
+getrandom = "0.3"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }

@@ -18,13 +18,24 @@ frame-examples = { path = "../examples" }
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 sqlx.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
 testcontainers.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 proptest = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+frame-portal-domain.workspace = true
+frame-portal-port.workspace = true
+frame-portal-use-cases.workspace = true
+frame-portal-memory.workspace = true
+frame-portal-hono.workspace = true
+frame-portal-web.workspace = true
+axum.workspace = true
+serde.workspace = true
+sha2.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
 
 [[test]]
 name = "unit"
@@ -33,3 +44,11 @@ path = "unit.rs"
 [[test]]
 name = "integration"
 path = "integration.rs"
+
+[[test]]
+name = "portal_unit"
+path = "portal_unit.rs"
+
+[[test]]
+name = "portal_integration"
+path = "portal_integration.rs"

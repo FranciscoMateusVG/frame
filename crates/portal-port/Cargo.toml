@@ -1,0 +1,12 @@
+[package]
+name = "frame-portal-port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+frame-portal-domain.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
