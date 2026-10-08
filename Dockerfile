@@ -27,7 +27,9 @@ COPY config config
 COPY lib lib
 COPY priv priv
 COPY rel rel
-RUN mix compile --warnings-as-errors && mix release print_portal
+RUN mix compile --warnings-as-errors && mix release print_portal \
+ # Readable by the non-root runtime user whatever the checkout's file modes.
+ && chmod -R a+rX _build/prod/rel/print_portal
 
 # ── runtime ──────────────────────────────────────────────────────────────
 FROM debian:${DEBIAN_VERSION} AS runtime
