@@ -9,7 +9,7 @@ import { request } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type FakeUpstream, startFakeUpstream } from '../helpers/fake-print-upstream.js';
-import { seedTwoFileOrder } from '../helpers/print-fixtures.js';
+import { PDF_BYTES, PNG_BYTES, seedTwoFileRequest } from '../helpers/print-fixtures.js';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const TSX = `${ROOT}node_modules/.bin/tsx`;
@@ -147,12 +147,19 @@ describe('portal process (src/http/server.ts)', () => {
   });
 
   it('renders full general instructions and downloads every unpaired legacy file', async () => {
-    const order = seedTwoFileOrder(upstream.api);
-    const files = order.jobs.map((j) => j.file);
-    Object.assign(order, {
+    const item = upstream.api.publishRequest({
+      title: 'Solicitação legada',
       jobs: [],
-      generalInstructions: { text: 'Texto integral\n<script>alert(1)</script>', files },
+      generalInstructions: {
+        text: 'Texto integral\n<script>alert(1)</script>',
+        files: [
+          { name: 'legado.pdf', mime: 'application/pdf', bytes: PDF_BYTES },
+          { name: 'legado.png', mime: 'image/png', bytes: PNG_BYTES },
+        ],
+      },
     });
+    const files = item.generalInstructions?.files ?? [];
+    const batchId = (await upstream.api.getOpenBatch())?.value.id ?? '';
     const running = await start(env());
     try {
       const go = browser(running.base);
@@ -167,7 +174,7 @@ describe('portal process (src/http/server.ts)', () => {
           })
         ).status,
       ).toBe(200);
-      const response = await go(`/orders/${order.id}`);
+      const response = await go('/');
       expect(response.status).toBe(200);
       const html = await response.text();
       expect(html).toContain('Instruções gerais');
@@ -175,9 +182,12 @@ describe('portal process (src/http/server.ts)', () => {
       expect(html).toContain('&lt;script&gt;');
       expect(html).not.toContain('<script>alert(1)</script>');
       expect(html).not.toContain('<strong>Cópias:</strong>');
+      expect(files).toHaveLength(2);
       for (const file of files) {
         expect(html).toContain(file.name);
-        const download = await go(`/api/print/v1/orders/${order.id}/files/${file.id}`);
+        const href = `/api/print/v2/batches/${batchId}/orders/${item.orderId}/files/${file.id}`;
+        expect(html).toContain(`href="${href}"`);
+        const download = await go(href);
         expect(download.status).toBe(200);
         expect(
           createHash('sha256')
@@ -237,7 +247,7 @@ describe('portal process (src/http/server.ts)', () => {
         ['/login', 'application/x-www-form-urlencoded', false, 413],
         // A command refused before its body is parsed (no session): 401, body drained.
         [
-          '/api/print/v1/monthly-closes/2026-09/invoice',
+          '/api/print/v2/monthly-closes/2026-09/invoice',
           'multipart/form-data; boundary=x',
           false,
           401,
@@ -294,7 +304,7 @@ describe('portal process (src/http/server.ts)', () => {
       });
       expect(login.status).toBe(200);
       upstream.behaviour.rateLimitedFor = 42;
-      const res = await go('/api/print/v1/orders');
+      const res = await go('/api/print/v2/batches');
       expect(res.status).toBe(429);
       expect(res.headers.get('retry-after')).toBe('42');
     } finally {
@@ -317,7 +327,7 @@ describe('portal process (src/http/server.ts)', () => {
   });
 
   it('serves the journey over HTTP and a restart logs everyone out', async () => {
-    const order = seedTwoFileOrder(upstream.api);
+    const item = seedTwoFileRequest(upstream.api);
     let running = await start(env());
     try {
       const go = browser(running.base);
@@ -339,21 +349,23 @@ describe('portal process (src/http/server.ts)', () => {
         /__Host-print_session=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Lax/,
       );
 
-      const list = await go('/api/print/v1/orders');
-      expect(list.status).toBe(200);
-      const body = (await list.json()) as { items: { id: string }[] };
-      expect(body.items.map((o) => o.id)).toContain(order.id);
+      const open = await go('/api/print/v2/batches/open');
+      expect(open.status).toBe(200);
+      const body = (await open.json()) as { batch: { items: { orderId: string }[] } };
+      expect(body.batch.items.map((i) => i.orderId)).toContain(item.orderId);
       expect(JSON.stringify(body)).not.toContain(upstream.token);
 
-      const page = await go(`/orders/${order.id}`);
+      const page = await go('/');
       expect(page.status).toBe(200);
-      expect(await page.text()).toContain('Arquivos retirados');
+      const home = await page.text();
+      expect(home).toContain('data-ttp="batch"');
+      expect(home).toContain('Retirei os arquivos');
 
       await stop(running);
       running = await start(env());
       // New process, old cookie: the in-memory registry died with the old one.
       const goNew = browser(running.base);
-      const replay = await fetch(`${running.base}/api/print/v1/orders`, {
+      const replay = await fetch(`${running.base}/api/print/v2/batches`, {
         headers: {
           Cookie: auth.headers
             .getSetCookie()
@@ -362,7 +374,7 @@ describe('portal process (src/http/server.ts)', () => {
         },
       });
       expect(replay.status).toBe(401);
-      expect((await goNew('/orders')).headers.get('location')).toBe('/login');
+      expect((await goNew('/')).headers.get('location')).toBe('/login');
       expect(running.output()).not.toContain(PASSWORD);
       expect(running.output()).not.toContain(upstream.token);
     } finally {

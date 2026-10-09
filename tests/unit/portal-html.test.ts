@@ -1,7 +1,8 @@
 /**
- * Server-rendered journey (spec §7) through the real Hono app: login form,
- * order list/detail, the three supplier commands as HTML forms, retries
- * after an ambiguous failure, invoices, logout — plus escaping and headers.
+ * Server-rendered pages through the real Hono app: login form, escaping,
+ * history pagination, command guards (session/Origin/CSRF), invoices against
+ * v2 monthly closes, logout — plus headers. The batch home and its commands
+ * are covered by portal-batch-html.test.ts.
  */
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -15,7 +16,8 @@ import {
   PASSWORD,
   type PortalClient,
 } from '../helpers/portal-harness.js';
-import { PDF_BYTES, seedTwoFileOrder } from '../helpers/print-fixtures.js';
+import { PDF_BYTES, seedTwoFileRequest } from '../helpers/print-fixtures.js';
+import { fixtureBatch, V2_ASSETS } from '../helpers/print-v2-fixture.js';
 
 function hidden(page: string, name: string): string {
   const match = new RegExp(`name="${name}" value="([^"]*)"`).exec(page);
@@ -40,15 +42,14 @@ describe('portal HTML', () => {
   });
 
   it('pages redirect to /login without a session (no returnTo)', async () => {
-    for (const path of ['/', '/orders', `/orders/${randomUUID()}`, '/invoices']) {
+    for (const path of ['/', '/batches', `/batches/${randomUUID()}`, '/invoices']) {
       const res = await browser.get(path);
-      expect(res.status, path).toBeGreaterThanOrEqual(302);
-      expect(res.headers.get('location'), path).toMatch(/^\/(login|orders)$/);
+      expect(res.status, path).toBe(303);
+      expect(res.headers.get('location'), path).toBe('/login');
     }
-    expect((await browser.get('/orders')).headers.get('location')).toBe('/login');
   });
 
-  it('login form: wrong password 401 with a generic message; success sets the session and lands on Pedidos', async () => {
+  it('login form: wrong password 401 with a generic message; success sets the session and lands on the current batch', async () => {
     const page = await browser.get('/login');
     expect(page.status).toBe(200);
     expect(page.headers.get('content-security-policy')).toContain("script-src 'self'");
@@ -65,15 +66,17 @@ describe('portal HTML', () => {
 
     const ok = await htmlLogin(browser);
     expect(ok.status).toBe(303);
-    expect(ok.headers.get('location')).toBe('/orders');
+    expect(ok.headers.get('location')).toBe('/');
     expect(browser.cookies.has('__Host-print_session')).toBe(true);
 
-    const orders = await browser.get('/orders');
-    const body = await orders.text();
-    expect(body).toContain('Pedidos');
+    const home = await browser.get('/');
+    const body = await home.text();
+    expect(body).toContain('Lote atual');
+    expect(body).toContain('Lotes anteriores');
     expect(body).toContain('Notas fiscais');
     expect(body).toContain('Sair');
-    expect(body).toContain('Nenhum pedido');
+    expect(body).toContain('Nenhum pedido aguardando');
+    expect((await browser.get('/login')).headers.get('location')).toBe('/');
   });
 
   it('Referrer-Policy keeps Origin on same-origin form posts (no-referrer makes browsers send Origin: null)', async () => {
@@ -92,28 +95,34 @@ describe('portal HTML', () => {
     expect(browser.cookies.has('__Host-print_session')).toBe(false);
   });
 
-  it('lists orders, escapes untrusted text, paginates with Anterior/Próxima', async () => {
-    seedTwoFileOrder(h.api, '<script>alert(1)</script>');
-    for (let i = 0; i < 21; i++) seedTwoFileOrder(h.api, `Pedido ${i}`);
+  it('escapes untrusted request text on the batch home', async () => {
+    seedTwoFileRequest(h.api, '<script>alert(1)</script>');
     await htmlLogin(browser);
+    const home = await (await browser.get('/')).text();
+    expect(home).not.toContain('<script>alert(1)</script>');
+    expect(home).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
 
-    const first = await (await browser.get('/orders')).text();
-    expect(first).not.toContain('<script>alert(1)</script>');
-    expect(first).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
-    expect(first.match(/Ver pedido/g)).toHaveLength(20);
-    const next = /href="(\/orders\?cursor=[^"]+)">Próxima/
+  it('history paginates with Anterior/Próxima', async () => {
+    const base = fixtureBatch('received');
+    for (let i = 0; i < 21; i++) {
+      const id = `00000000-0000-4000-8000-${String(1000 + i).padStart(12, '0')}`;
+      h.api.seedBatch({ ...base, id, reference: `LOT-${1000 + i}` }, V2_ASSETS);
+    }
+    await htmlLogin(browser);
+    const first = await (await browser.get('/batches')).text();
+    expect(first.match(/data-ttp="history-batch"/g)).toHaveLength(20);
+    const next = /href="(\/batches\?cursor=[^"]+)">Próxima/
       .exec(first)?.[1]
       ?.replaceAll('&amp;', '&');
     expect(next).toBeDefined();
-
     const second = await (await browser.get(next ?? '')).text();
-    expect(second.match(/Ver pedido/g)).toHaveLength(2);
-    expect(second).toMatch(
-      /href="\/orders(\?back=)?"[^>]*>Anterior|href="\/orders\?back=[^"]*">Anterior/,
-    );
+    expect(second.match(/data-ttp="history-batch"/g)).toHaveLength(1);
+    expect(second).toMatch(/href="\/batches(\?back=)?"[^>]*>Anterior/);
+    expect((await browser.get('/batches?cursor=bogus')).headers.get('location')).toBe('/batches');
   });
 
-  it('distinguishes "Nenhum pedido" from an unavailable upstream', async () => {
+  it('distinguishes an empty history from an unavailable upstream', async () => {
     const down = createHarness({
       printApi: new Proxy({} as PrintApi, {
         get: () => async () => {
@@ -123,216 +132,61 @@ describe('portal HTML', () => {
     });
     const b = down.client();
     await htmlLogin(b);
-    const res = await b.get('/orders');
+    const res = await b.get('/batches');
     expect(res.status).toBe(503);
     const html = await res.text();
     expect(html).toContain('data-state="unavailable"');
-    expect(html).not.toContain('Nenhum pedido');
-  });
-
-  it('order detail shows jobs, downloads and the collect form; collecting redirects with confirmation', async () => {
-    const order = seedTwoFileOrder(h.api);
-    await htmlLogin(browser);
-    const page = await (await browser.get(`/orders/${order.id}`)).text();
-    for (const text of [
-      order.reference,
-      'Apostila de Matemática',
-      'Frente e verso, grampeado',
-      'Só frente, colorido',
-      'Baixar arquivo',
-      'Conferi todos os arquivos desta revisão',
-      'Arquivos retirados',
-      'Confirmar retirada',
-      'Voltar',
-    ]) {
-      expect(page).toContain(text);
-    }
-    expect(page).toContain(`/api/print/v1/orders/${order.id}/files/${order.jobs[0]?.file.id}`);
-
-    const form = new URLSearchParams({
-      _csrf: hidden(page, '_csrf'),
-      idempotencyKey: hidden(page, 'idempotencyKey'),
-      etag: hidden(page, 'etag').replaceAll('&quot;', '"'),
-      revision: '1',
-    });
-    const unchecked = await browser.postForm(`/orders/${order.id}/collected`, form);
-    expect(unchecked.status).toBe(400);
-    expect(await unchecked.text()).toContain('Conferi todos os arquivos');
-
-    form.set('checked', '1');
-    const done = await browser.postForm(`/orders/${order.id}/collected`, form);
-    expect(done.status).toBe(303);
-    expect(done.headers.get('location')).toBe(`/orders/${order.id}?ok=collected`);
-    const after = await (await browser.get(done.headers.get('location') ?? '')).text();
-    expect(after).toContain('Retirada confirmada.');
-    expect(after).toContain('Valor do orçamento');
-    expect(after).toContain('Arquivo do orçamento');
-    expect(after).toContain('Enviar orçamento');
-
-    // Double submit of the same form = same key and intent → replay, no error.
-    const again = await browser.postForm(`/orders/${order.id}/collected`, form);
-    expect(again.status).toBe(303);
-  });
-
-  it('quote via form converts BRL to cents; pending shows the waiting state; approval enables printing', async () => {
-    const order = seedTwoFileOrder(h.api);
-    await h.api.markCollected(
-      order.id,
-      { revision: 1 },
-      { ifMatch: `"${order.id}:1"`, idempotencyKey: randomUUID() },
-    );
-    await htmlLogin(browser);
-    const page = await (await browser.get(`/orders/${order.id}`)).text();
-    const form = () => {
-      const f = new FormData();
-      f.set('_csrf', hidden(page, '_csrf'));
-      f.set('idempotencyKey', hidden(page, 'idempotencyKey'));
-      f.set('etag', hidden(page, 'etag').replaceAll('&quot;', '"'));
-      f.set('orderRevision', '1');
-      f.set('file', new File([PDF_BYTES], 'orcamento.pdf', { type: 'application/pdf' }));
-      return f;
-    };
-
-    const badAmount = form();
-    badAmount.set('amount', '12.34');
-    const bad = await browser.postForm(`/orders/${order.id}/quotes`, badAmount);
-    expect(bad.status).toBe(400);
-    const badHtml = await bad.text();
-    expect(badHtml).toContain('Valor do orçamento inválido');
-    expect(badHtml).toContain('value="12.34"');
-
-    const good = form();
-    good.set('amount', 'R$ 1.234,56');
-    const sent = await browser.postForm(`/orders/${order.id}/quotes`, good);
-    expect(sent.status).toBe(303);
-    const stored = await h.api.getOrder(order.id);
-    expect(stored.value.currentQuote?.amountCents).toBe(123_456);
-
-    const waiting = await (await browser.get(`/orders/${order.id}`)).text();
-    expect(waiting).toContain('Aguardando aprovação do Financeiro');
-    expect(waiting).toContain('Baixar orçamento');
-    expect(waiting).not.toContain('Aprovar');
-    expect(waiting).not.toContain('Marcar como impresso');
-
-    h.api.approveQuote(order.id);
-    const approved = await (await browser.get(`/orders/${order.id}`)).text();
-    expect(approved).toContain('Orçamento aprovado');
-    expect(approved).toContain('Marcar como impresso');
-    expect(approved).toContain('Confirmar impressão');
-    const printForm = new URLSearchParams({
-      _csrf: hidden(approved, '_csrf'),
-      idempotencyKey: hidden(approved, 'idempotencyKey'),
-      etag: hidden(approved, 'etag').replaceAll('&quot;', '"'),
-      revision: '1',
-      quoteId: hidden(approved, 'quoteId'),
-    });
-    const printed = await browser.postForm(`/orders/${order.id}/printed`, printForm);
-    expect(printed.status).toBe(303);
-    expect((await h.api.getOrder(order.id)).value.status).toBe('printed');
-  });
-
-  it('rejected quote shows the reason and "Enviar novo orçamento"', async () => {
-    const order = seedTwoFileOrder(h.api);
-    await h.api.markCollected(
-      order.id,
-      { revision: 1 },
-      { ifMatch: `"${order.id}:1"`, idempotencyKey: randomUUID() },
-    );
-    await h.api.submitQuote(
-      order.id,
-      { amountCents: 100, orderRevision: 1, file: { filename: 'q.pdf', bytes: PDF_BYTES } },
-      { ifMatch: `"${order.id}:2"`, idempotencyKey: randomUUID() },
-    );
-    h.api.rejectQuote(order.id, 'Faltou o frete <b>combinado</b>');
-    await htmlLogin(browser);
-    const page = await (await browser.get(`/orders/${order.id}`)).text();
-    expect(page).toContain('Orçamento rejeitado');
-    expect(page).toContain('Faltou o frete &lt;b&gt;combinado&lt;/b&gt;');
-    expect(page).toContain('Enviar novo orçamento');
-  });
-
-  it('stale form → 412 "Pedido atualizado; confira novamente" with a fresh key', async () => {
-    const order = seedTwoFileOrder(h.api);
-    await htmlLogin(browser);
-    const page = await (await browser.get(`/orders/${order.id}`)).text();
-    const key = hidden(page, 'idempotencyKey');
-    const form = new URLSearchParams({
-      _csrf: hidden(page, '_csrf'),
-      idempotencyKey: key,
-      etag: `"${order.id}:0"`,
-      revision: '1',
-      checked: '1',
-    });
-    const res = await browser.postForm(`/orders/${order.id}/collected`, form);
-    expect(res.status).toBe(412);
-    const html = await res.text();
-    expect(html).toContain('Pedido atualizado; confira novamente.');
-    expect(hidden(html, 'idempotencyKey')).not.toBe(key);
-  });
-
-  it('ambiguous failure (503) re-renders with the SAME key so repeating cannot double-apply', async () => {
-    const real = new PrintApiMemory({ clock: () => new Date('2026-10-08T12:00:00Z') });
-    let failNext = false;
-    const flaky = new Proxy(real, {
-      get(target, prop, receiver) {
-        const value = Reflect.get(target, prop, receiver);
-        if (prop === 'markCollected') {
-          return async (...args: Parameters<PrintApiMemory['markCollected']>) => {
-            if (failNext) {
-              failNext = false;
-              throw new UpstreamUnavailableError('timeout');
-            }
-            return target.markCollected(...args);
-          };
-        }
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
-    });
-    const hf = createHarness({ printApi: flaky });
-    const order = seedTwoFileOrder(real);
-    const b = hf.client();
-    await htmlLogin(b);
-    const page = await (await b.get(`/orders/${order.id}`)).text();
-    const key = hidden(page, 'idempotencyKey');
-    const form = new URLSearchParams({
-      _csrf: hidden(page, '_csrf'),
-      idempotencyKey: key,
-      etag: hidden(page, 'etag').replaceAll('&quot;', '"'),
-      revision: '1',
-      checked: '1',
-    });
-    failNext = true;
-    const res = await b.postForm(`/orders/${order.id}/collected`, form);
-    expect(res.status).toBe(503);
-    const html = await res.text();
-    expect(html).toContain('Serviço indisponível');
-    expect(html).toContain('Consultar novamente');
-    expect(hidden(html, 'idempotencyKey')).toBe(key);
-    expect((await real.getOrder(order.id)).value.status).toBe('ready');
-
-    const retry = await b.postForm(`/orders/${order.id}/collected`, form);
-    expect(retry.status).toBe(303);
-    expect((await real.getOrder(order.id)).value.status).toBe('files_collected');
+    expect(html).not.toContain('Nenhum lote anterior');
+    expect((await b.get(`/batches/${randomUUID()}`)).status).toBe(503);
   });
 
   it('expired session during a command redirects to login, never a false success', async () => {
-    const order = seedTwoFileOrder(h.api);
+    const request = seedTwoFileRequest(h.api);
     await htmlLogin(browser);
-    const page = await (await browser.get(`/orders/${order.id}`)).text();
+    const page = await (await browser.get('/')).text();
+    const batchId = /data-batch-id="([^"]+)"/.exec(page)?.[1] ?? '';
     h.clock.now = new Date(h.clock.now.getTime() + 31 * 60 * 1000);
     const res = await browser.postForm(
-      `/orders/${order.id}/collected`,
+      `/batches/${batchId}/collected`,
       new URLSearchParams({
         _csrf: hidden(page, '_csrf'),
         idempotencyKey: hidden(page, 'idempotencyKey'),
         etag: hidden(page, 'etag').replaceAll('&quot;', '"'),
-        revision: '1',
         checked: '1',
+        confirmed: '1',
       }),
     );
     expect(res.status).toBe(303);
     expect(res.headers.get('location')).toBe('/login');
-    expect((await h.api.getOrder(order.id)).value.status).toBe('ready');
+    const batch = (await h.api.getBatch(batchId)).value;
+    expect(batch.status).toBe('open');
+    expect(batch.items[0]?.orderId).toBe(request.orderId);
+  });
+
+  it('a command form from another origin or with a bad CSRF token is refused', async () => {
+    seedTwoFileRequest(h.api);
+    await htmlLogin(browser);
+    const page = await (await browser.get('/')).text();
+    const batchId = /data-batch-id="([^"]+)"/.exec(page)?.[1] ?? '';
+    const form = () =>
+      new URLSearchParams({
+        _csrf: hidden(page, '_csrf'),
+        idempotencyKey: hidden(page, 'idempotencyKey'),
+        etag: hidden(page, 'etag').replaceAll('&quot;', '"'),
+        checked: '1',
+        confirmed: '1',
+      });
+    const foreign = await browser.postForm(`/batches/${batchId}/collected`, form(), {
+      origin: 'https://evil.test',
+    });
+    expect(foreign.status).toBe(403);
+    const badCsrf = form();
+    badCsrf.set('_csrf', 'nope');
+    expect((await browser.postForm(`/batches/${batchId}/collected`, badCsrf)).status).toBe(403);
+    const badKey = form();
+    badKey.set('idempotencyKey', 'not-a-uuid');
+    expect((await browser.postForm(`/batches/${batchId}/collected`, badKey)).status).toBe(400);
+    expect((await h.api.getBatch(batchId)).value.status).toBe('open');
   });
 
   it('invoices: previous competence by default, period rule for the current month, NF form', async () => {
@@ -345,33 +199,39 @@ describe('portal HTML', () => {
     const def = await (await browser.get('/invoices')).text();
     expect(def).toContain('value="2026-09"');
     expect(def).toContain('Total calculado');
-    expect(def).toContain('Nenhum pedido impresso nesta competência.');
+    expect(def).toContain('Nenhum lote impresso nesta competência.');
   });
 
   it('invoices: items, NF submission with divergence, rejection and resubmission', async () => {
     h.clock.now = new Date('2026-09-15T15:00:00.000Z');
-    const order = seedTwoFileOrder(h.api);
-    await h.api.markCollected(
-      order.id,
-      { revision: 1 },
-      { ifMatch: `"${order.id}:1"`, idempotencyKey: randomUUID() },
-    );
+    seedTwoFileRequest(h.api);
+    const open = await h.api.getOpenBatch();
+    const batchId = open?.value.id ?? '';
+    await h.api.markCollected(batchId, { ifMatch: `"${batchId}:1"`, idempotencyKey: randomUUID() });
     const q = await h.api.submitQuote(
-      order.id,
-      { amountCents: 57_900, orderRevision: 1, file: { filename: 'q.pdf', bytes: PDF_BYTES } },
-      { ifMatch: `"${order.id}:2"`, idempotencyKey: randomUUID() },
+      batchId,
+      { amountCents: 56_900, file: { filename: 'q.pdf', bytes: PDF_BYTES } },
+      { ifMatch: `"${batchId}:2"`, idempotencyKey: randomUUID() },
     );
-    const approved = h.api.approveQuote(order.id);
+    const approved = h.api.approveQuote(batchId);
     await h.api.markPrinted(
-      order.id,
-      { revision: 1, quoteId: q.value.currentQuote?.id ?? '' },
-      { ifMatch: `"${order.id}:${approved.version}"`, idempotencyKey: randomUUID() },
+      batchId,
+      { quoteId: q.value.currentQuote?.id ?? '' },
+      { ifMatch: `"${batchId}:${approved.version}"`, idempotencyKey: randomUUID() },
     );
+    h.api.seedLegacyCharge({
+      reference: 'IMP-0301',
+      amountCents: 1_000,
+      printedAt: '2026-09-10T12:00:00.000Z',
+    });
     h.clock.now = new Date('2026-10-08T12:00:00.000Z');
     await htmlLogin(browser);
 
     const page = await (await browser.get('/invoices?competence=2026-09')).text();
-    expect(page).toContain(order.reference);
+    // One charge per batch (linking to its detail) plus the historical individual order.
+    expect(page).toContain(`<a href="/batches/${batchId}">${approved.reference}</a>`);
+    expect(page).toContain('IMP-0301 <span class="meta">(pedido individual)</span>');
+    expect(page).toContain('R$ 569,00');
     expect(page).toContain('R$ 579,00');
     expect(page).toContain('Valor total da NF');
     expect(page).toContain('Arquivo da NF');
@@ -425,14 +285,14 @@ describe('portal HTML', () => {
 
   it('Sair revokes the session; afterwards pages need the password again', async () => {
     await htmlLogin(browser);
-    const page = await (await browser.get('/orders')).text();
+    const page = await (await browser.get('/')).text();
     const out = await browser.postForm(
       '/logout',
       new URLSearchParams({ _csrf: hidden(page, '_csrf') }),
     );
     expect(out.status).toBe(303);
     expect(out.headers.get('location')).toBe('/login');
-    expect((await browser.get('/orders')).headers.get('location')).toBe('/login');
+    expect((await browser.get('/')).headers.get('location')).toBe('/login');
   });
 
   it('serves assets and health probes; HTML never contains the service token or password', async () => {
@@ -443,7 +303,7 @@ describe('portal HTML', () => {
     const js = await browser.get('/assets/portal.js');
     expect(js.headers.get('content-type')).toContain('javascript');
     await htmlLogin(browser);
-    const html = await (await browser.get('/orders')).text();
+    const html = await (await browser.get('/')).text();
     expect(html).not.toContain(PASSWORD);
     expect(html).not.toMatch(/Bearer/i);
   });

@@ -24,7 +24,7 @@ export default defineConfig({
         // Print-shop portal: pure rules and use cases are held to the same bar
         // as the Cat template; the transport adapter and JSON API slightly lower
         // (defensive branches for malformed upstream answers).
-        'src/domain/{money,monthly-close,portal-session,print-order}.ts': {
+        'src/domain/{money,monthly-close,portal-session,print-batch,document-type}.ts': {
           lines: 90,
           functions: 90,
           branches: 85,

@@ -1,17 +1,17 @@
 /**
  * Zod mirror of the FROZEN service contract
- * `apps/hono-app/docs/contracts/print-portal-v1.schema.json`
- * (monorepo-incluir PR B #1038 + PR C monthly closes; verified unchanged at 19d7ea66).
+ * `apps/hono-app/docs/contracts/print-portal-v2.schema.json`
+ * (monorepo-incluir #1053, re-freeze 27022467: batches + monthly closes).
  *
  * Every object is `.strict()` (= `additionalProperties: false`), so an
  * upstream field the contract does not name — a bucket, a key, an email —
  * fails parsing and never reaches the browser. The copy of the JSON Schema
- * and the captured fixtures in tests/helpers are checked against these
+ * and the frozen fixture in tests/helpers are checked against these
  * schemas by tests/unit/print-api-contract.test.ts.
  */
 import { z } from 'zod';
 import { CLOSE_STATES } from '../domain/monthly-close.js';
-import { ORDER_STATUSES, QUOTE_DECISIONS } from '../domain/print-order.js';
+import { BATCH_STATUSES, QUOTE_DECISIONS } from '../domain/print-batch.js';
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 const MAX_CENTS = 2_147_483_647;
@@ -24,7 +24,8 @@ const uuid = z
 const instant = z.iso.datetime();
 const positive = z.number().int().min(1).max(MAX_SAFE);
 const cents = z.number().int().min(1).max(MAX_CENTS);
-const reference = z.string().regex(/^IMP-\d{4,}$/);
+const orderReference = z.string().regex(/^IMP-\d{4,}$/);
+const batchReference = z.string().regex(/^LOT-\d{4,}$/);
 
 export const FileSchema = z
   .object({
@@ -46,11 +47,36 @@ export const PrintJobSchema = z
   })
   .strict();
 
+export const BatchItemSchema = z
+  .object({
+    orderId: uuid,
+    previouslyCancelledIn: batchReference.optional(),
+    reference: orderReference,
+    title: z.string().min(1),
+    revision: positive,
+    jobs: z.array(PrintJobSchema),
+    generalInstructions: z
+      .object({ text: z.string(), files: z.array(FileSchema) })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (item) => {
+      // Each file appears exactly once within the item; at least one file.
+      const ids = [
+        ...item.jobs.map((j) => j.file.id),
+        ...(item.generalInstructions?.files ?? []).map((f) => f.id),
+      ];
+      return ids.length > 0 && new Set(ids).size === ids.length;
+    },
+    { message: 'Each item needs at least one file, each exactly once', path: ['jobs'] },
+  );
+
 export const QuoteSchema = z
   .object({
     id: uuid,
     revision: positive,
-    orderRevision: positive,
     amountCents: cents,
     currency: z.literal('BRL'),
     document: FileSchema,
@@ -61,47 +87,55 @@ export const QuoteSchema = z
   })
   .strict();
 
-const orderSummaryShape = {
+const batchSummaryShape = {
   id: uuid,
-  reference,
-  title: z.string().min(1),
-  revision: positive,
+  reference: batchReference,
+  status: z.enum(BATCH_STATUSES),
   version: positive,
-  status: z.enum(ORDER_STATUSES),
+  itemCount: z.number().int().min(0).max(MAX_SAFE),
   createdAt: instant,
   collectedAt: instant.nullable(),
   printedAt: instant.nullable(),
+  receivedAt: instant.nullable(),
   approvedAmountCents: cents.nullable(),
 };
 
-export const OrderSummarySchema = z.object(orderSummaryShape).strict();
+export const BatchSummarySchema = z.object(batchSummaryShape).strict();
 
-export const OrderSchema = z
+export const BatchSchema = z
   .object({
-    ...orderSummaryShape,
-    jobs: z.array(PrintJobSchema),
-    generalInstructions: z
-      .object({ text: z.string(), files: z.array(FileSchema).min(1) })
-      .strict()
-      .optional(),
+    ...batchSummaryShape,
+    items: z.array(BatchItemSchema),
     currentQuote: QuoteSchema.nullable(),
     cancellationReason: z.string().nullable(),
   })
   .strict()
   .refine(
-    (order) => (order.generalInstructions ? order.jobs.length === 0 : order.jobs.length > 0),
-    { message: 'Exactly one instruction mode is required', path: ['jobs'] },
+    (batch) =>
+      batch.itemCount === batch.items.length &&
+      new Set(batch.items.map((i) => i.orderId)).size === batch.items.length,
+    { message: 'itemCount equals items length; unique orderId', path: ['items'] },
   );
 
-export const OrderListResponseSchema = z
-  .object({ items: z.array(OrderSummarySchema), nextCursor: z.string().nullable() })
+export const BatchResponseSchema = z.object({ batch: BatchSchema }).strict();
+
+export const OpenBatchResponseSchema = z.object({ batch: BatchSchema.nullable() }).strict();
+
+export const BatchListResponseSchema = z
+  .object({ items: z.array(BatchSummarySchema), nextCursor: z.string().nullable() })
   .strict();
 
-export const OrderResponseSchema = z.object({ order: OrderSchema }).strict();
+const closeCharge = {
+  reference: z.string(),
+  quoteId: uuid,
+  amountCents: cents,
+  printedAt: instant,
+};
 
-export const CloseItemSchema = z
-  .object({ orderId: uuid, reference, quoteId: uuid, amountCents: cents, printedAt: instant })
-  .strict();
+export const CloseItemSchema = z.discriminatedUnion('kind', [
+  z.object({ ...closeCharge, kind: z.literal('batch'), batchId: uuid }).strict(),
+  z.object({ ...closeCharge, kind: z.literal('legacy_order'), orderId: uuid }).strict(),
+]);
 
 export const CloseSchema = z
   .object({
@@ -142,6 +176,10 @@ export const ERROR_CODES = [
   'INTERNAL',
   'NOT_CONFIGURED',
   'UPSTREAM_UNAVAILABLE',
+  'BATCH_NOT_ACTIVE',
+  'BATCH_WORKFLOW_REQUIRED',
+  'EMPTY_BATCH',
+  'TOTAL_MISMATCH',
 ] as const;
 
 export const ErrorSchema = z

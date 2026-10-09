@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { sniffDocumentMime } from '../domain/document-type.js';
 import {
   type CloseItem,
   competenceOf,
@@ -7,19 +8,20 @@ import {
   type MonthlyClose,
 } from '../domain/monthly-close.js';
 import type {
-  Order,
-  OrderPage,
-  OrderStatus,
+  Batch,
+  BatchItem,
+  BatchPage,
+  BatchStatus,
   PrintFile,
   PrintJob,
   Quote,
-} from '../domain/print-order.js';
+} from '../domain/print-batch.js';
 import { UpstreamRejectedError } from '../errors/upstream-rejected.error.js';
 import { markSpanFailed } from '../observability/span-errors.js';
 import {
   type CommandResult,
   type Download,
-  type ListOrdersQuery,
+  type ListBatchesQuery,
   PRINT_API_PREFIX,
   type Preconditions,
   type PrintApi,
@@ -37,9 +39,10 @@ const MESSAGES: Record<string, string> = {
   INVALID_REQUEST: 'Requisição inválida.',
   INVALID_CURSOR: 'Cursor inválido.',
   INVALID_COMPETENCE: 'Competência inválida.',
-  INVALID_STATE: 'O pedido não está em um estado que permita esta operação.',
+  INVALID_STATE: 'O lote não está em um estado que permita esta operação.',
+  EMPTY_BATCH: 'O lote está vazio.',
   IDEMPOTENCY_CONFLICT: 'A chave de idempotência já foi usada para outra operação.',
-  VERSION_MISMATCH: 'O pedido foi atualizado. Consulte novamente antes de repetir.',
+  VERSION_MISMATCH: 'O lote foi atualizado. Consulte novamente antes de repetir.',
   PRECONDITION_REQUIRED: 'Cabeçalhos If-Match e Idempotency-Key são obrigatórios.',
   PERIOD_OPEN: 'A competência ainda não foi encerrada.',
   EMPTY_CLOSE: 'Não há pedidos impressos nesta competência.',
@@ -53,6 +56,7 @@ const STATUS: Record<string, number> = {
   INVALID_CURSOR: 400,
   INVALID_COMPETENCE: 400,
   INVALID_STATE: 409,
+  EMPTY_BATCH: 409,
   IDEMPOTENCY_CONFLICT: 409,
   PERIOD_OPEN: 409,
   EMPTY_CLOSE: 409,
@@ -71,16 +75,23 @@ function reject(code: string): UpstreamRejectedError {
   );
 }
 
-/** Input for {@link PrintApiMemory.seedOrder}. */
+/** A file given to a seed helper. */
+export interface SeedFile {
+  readonly name: string;
+  readonly mime: string;
+  readonly bytes: Uint8Array;
+}
+
+/** Input for {@link PrintApiMemory.publishRequest}. */
 export interface SeedJob {
   readonly title: string;
   readonly copies: number;
   readonly instructions: string;
-  readonly file: { readonly name: string; readonly mime: string; readonly bytes: Uint8Array };
+  readonly file: SeedFile;
 }
 
-interface StoredOrder {
-  order: Order;
+interface StoredBatch {
+  batch: Batch;
   supplierId: string;
 }
 
@@ -107,27 +118,39 @@ export interface PrintApiMemoryOptions {
   readonly clock?: () => Date;
 }
 
+const CURRENT: readonly BatchStatus[] = [
+  'open',
+  'files_collected',
+  'quote_pending',
+  'quote_rejected',
+  'quote_approved',
+  'printed',
+];
+
 /**
- * In-memory fake of the Incluir print-portal service API.
+ * In-memory fake of the Incluir print-portal v2 (batch) service API.
  *
  * Mirrors the upstream rules the portal depends on — supplier scoping
- * (foreign ids are 404), the order state machine, ETag/If-Match (412),
- * Idempotency-Key replay/conflict, 428 when preconditions are missing,
- * document type/size checks, keyset pagination and the monthly close —
- * following the check order of PR B's `print-order-service.ts`. The staff
- * side (approve/reject quote, cancel, accept/reject invoice) is exposed as
- * test helpers, since the portal never performs those.
+ * (foreign ids are 404), at most ONE current batch per supplier, the batch
+ * state machine, ETag/If-Match (412), Idempotency-Key replay/conflict, 428
+ * when preconditions are missing, document type/size checks, keyset
+ * pagination and the monthly close. New requests published while a batch
+ * is active are queued and only exposed in the next batch (after receipt or
+ * cancellation). The staff side (approve/reject quote, receive, cancel,
+ * accept/reject invoice) is exposed as test helpers, since the portal never
+ * performs those.
  *
  * Instrumented identically to {@link PrintApiHttp}: same span names and
  * attributes, `server.address = "memory"`.
  */
 export class PrintApiMemory implements PrintApi {
-  private readonly orders = new Map<string, StoredOrder>();
+  private readonly batches = new Map<string, StoredBatch>();
+  private readonly queued = new Map<string, BatchItem[]>();
   private readonly blobs = new Map<string, Uint8Array>();
-  private readonly fileNames = new Map<string, string>();
   private readonly closes = new Map<string, StoredClose>();
   private readonly idempotency = new Map<string, IdempotencyRecord>();
-  private sequence = 0;
+  private orderSequence = 0;
+  private batchSequence = 0;
   private readonly supplierId: string;
   private readonly clock: () => Date;
 
@@ -136,16 +159,19 @@ export class PrintApiMemory implements PrintApi {
     this.clock = options.clock ?? (() => new Date());
   }
 
-  // ── test helpers (staff / seed side) ──
+  // ── test helpers (Incluir / staff side) ──
 
-  /** Create a `ready` order. `supplierId` defaults to this credential's supplier. */
-  seedOrder(input: {
+  /**
+   * Publish a pending request. It joins the supplier's open batch (a new one
+   * if there is none), or waits in the queue while a batch is active.
+   */
+  publishRequest(input: {
     readonly title?: string;
     readonly jobs: readonly SeedJob[];
+    readonly generalInstructions?: { readonly text: string; readonly files: readonly SeedFile[] };
     readonly supplierId?: string;
-  }): Order {
-    this.sequence++;
-    const now = this.clock().toISOString();
+  }): BatchItem {
+    this.orderSequence++;
     const jobs: PrintJob[] = input.jobs.map((job) => ({
       id: randomUUID(),
       title: job.title,
@@ -153,43 +179,110 @@ export class PrintApiMemory implements PrintApi {
       instructions: job.instructions,
       file: this.storeFile(job.file.name, job.file.mime, job.file.bytes),
     }));
-    const order: Order = {
-      id: randomUUID(),
-      reference: `IMP-${String(this.sequence).padStart(4, '0')}`,
-      title: input.title ?? jobs[0]?.title ?? 'Pedido',
+    const general = input.generalInstructions;
+    const item: BatchItem = {
+      orderId: randomUUID(),
+      reference: `IMP-${String(this.orderSequence).padStart(4, '0')}`,
+      title: input.title ?? jobs[0]?.title ?? 'Solicitação',
       revision: 1,
-      version: 1,
-      status: 'ready',
-      // Strictly increasing createdAt keeps keyset order deterministic.
-      createdAt: new Date(Date.parse(now) + this.sequence).toISOString(),
-      collectedAt: null,
-      printedAt: null,
-      approvedAmountCents: null,
       jobs,
-      currentQuote: null,
-      cancellationReason: null,
+      ...(general
+        ? {
+            generalInstructions: {
+              text: general.text,
+              files: general.files.map((f) => this.storeFile(f.name, f.mime, f.bytes)),
+            },
+          }
+        : {}),
     };
-    this.orders.set(order.id, { order, supplierId: input.supplierId ?? this.supplierId });
-    return order;
+    const supplierId = input.supplierId ?? this.supplierId;
+    const current = this.currentOf(supplierId);
+    if (current && current.batch.status !== 'open') {
+      this.queued.set(supplierId, [...(this.queued.get(supplierId) ?? []), item]);
+    } else if (current) {
+      this.update(current, { items: [...current.batch.items, item] });
+    } else {
+      this.createBatch(supplierId, [item]);
+    }
+    return item;
+  }
+
+  /**
+   * Store a batch verbatim (e.g. a frozen contract fixture snapshot) with
+   * the bytes of every file it references, keyed by file id.
+   */
+  seedBatch(batch: Batch, files: ReadonlyMap<string, Uint8Array>, supplierId?: string): void {
+    const documents = [
+      ...batch.items.flatMap((item) => [
+        ...item.jobs.map((j) => j.file),
+        ...(item.generalInstructions?.files ?? []),
+      ]),
+      ...(batch.currentQuote ? [batch.currentQuote.document] : []),
+    ];
+    for (const file of documents) {
+      const bytes = files.get(file.id);
+      if (!bytes) throw new Error(`missing bytes for file ${file.id}`);
+      this.blobs.set(file.id, bytes);
+    }
+    this.batchSequence++;
+    this.batches.set(batch.id, { batch, supplierId: supplierId ?? this.supplierId });
   }
 
   /** Staff approves the current pending quote. */
-  approveQuote(orderId: string): Order {
-    return this.staffDecide(orderId, 'approved', null);
+  approveQuote(batchId: string): Batch {
+    return this.staffDecide(batchId, 'approved', null);
   }
 
   /** Staff rejects the current pending quote with a reason. */
-  rejectQuote(orderId: string, reason: string): Order {
-    return this.staffDecide(orderId, 'rejected', reason);
+  rejectQuote(batchId: string, reason: string): Batch {
+    return this.staffDecide(batchId, 'rejected', reason);
   }
 
-  /** Staff cancels an order (any non-final state). */
-  cancelOrder(orderId: string, reason: string): Order {
-    const stored = this.mustGet(orderId);
-    if (stored.order.status === 'printed' || stored.order.status === 'cancelled') {
+  /** Financeiro confirms receipt of a printed batch; queued requests form the next batch. */
+  receiveBatch(batchId: string): Batch {
+    const stored = this.mustGet(batchId);
+    if (stored.batch.status !== 'printed') throw reject('INVALID_STATE');
+    const received = this.update(stored, {
+      status: 'received',
+      receivedAt: this.clock().toISOString(),
+    });
+    this.formNext(stored.supplierId, []);
+    return received;
+  }
+
+  /**
+   * Whole-batch cancellation (before printed): every member returns to the
+   * next open batch, flagged with this batch's reference, with any queued
+   * requests. No quote is transferred.
+   */
+  cancelBatch(batchId: string, reason: string): Batch {
+    const stored = this.mustGet(batchId);
+    if (!CURRENT.includes(stored.batch.status) || stored.batch.status === 'printed') {
       throw reject('INVALID_STATE');
     }
-    return this.update(stored, { status: 'cancelled', cancellationReason: reason });
+    const cancelled = this.update(stored, { status: 'cancelled', cancellationReason: reason });
+    const members = cancelled.items.map((item) => ({
+      ...item,
+      previouslyCancelledIn: cancelled.reference,
+    }));
+    this.formNext(stored.supplierId, members);
+    return cancelled;
+  }
+
+  /** A historical individual (pre-batch) charge in the monthly close. */
+  seedLegacyCharge(input: {
+    readonly reference: string;
+    readonly amountCents: number;
+    readonly printedAt: string;
+  }): void {
+    this.charge(input.printedAt, {
+      kind: 'legacy_order',
+      orderId: randomUUID(),
+      reference: input.reference,
+      quoteId: randomUUID(),
+      amountCents: input.amountCents,
+      printedAt: input.printedAt,
+    });
   }
 
   /** Staff accepts or rejects the submitted invoice of a competence. */
@@ -208,23 +301,23 @@ export class PrintApiMemory implements PrintApi {
 
   // ── PrintApi ──
 
-  listOrders(query: ListOrdersQuery): Promise<OrderPage> {
-    return this.span('listOrders', 'GET', '/orders', async () => {
+  listBatches(query: ListBatchesQuery): Promise<BatchPage> {
+    return this.span('listBatches', 'GET', '/batches', async () => {
       let after: { createdAt: string; id: string } | null = null;
       if (query.cursor !== undefined) {
         after = decodeCursor(query.cursor, query.status);
         if (!after) throw reject('INVALID_CURSOR');
       }
-      const visible = [...this.orders.values()]
+      const visible = [...this.batches.values()]
         .filter((s) => s.supplierId === this.supplierId)
-        .map((s) => s.order)
-        .filter((o) => !query.status || o.status === query.status)
+        .map((s) => s.batch)
+        .filter((b) => !query.status || b.status === query.status)
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
         .filter(
-          (o) =>
+          (b) =>
             !after ||
-            o.createdAt > after.createdAt ||
-            (o.createdAt === after.createdAt && o.id > after.id),
+            b.createdAt > after.createdAt ||
+            (b.createdAt === after.createdAt && b.id > after.id),
         );
       const page = visible.slice(0, query.limit);
       const last = page[page.length - 1];
@@ -235,42 +328,53 @@ export class PrintApiMemory implements PrintApi {
     });
   }
 
-  getOrder(orderId: string): Promise<Tagged<Order>> {
-    return this.span('getOrder', 'GET', '/orders/:id', async () => {
-      const { order } = this.visible(orderId);
-      return { value: order, etag: etagOf(order.id, order.version) };
+  getOpenBatch(): Promise<Tagged<Batch> | null> {
+    return this.span('getOpenBatch', 'GET', '/batches/open', async () => {
+      const current = this.currentOf(this.supplierId);
+      if (!current || current.batch.status !== 'open') return null;
+      return { value: current.batch, etag: etagOf(current.batch) };
     });
   }
 
-  downloadOrderFile(orderId: string, fileId: string): Promise<Download> {
-    return this.span('downloadOrderFile', 'GET', '/orders/:id/files/:fileId', async () => {
-      const { order } = this.visible(orderId);
-      const file = (order.generalInstructions?.files ?? order.jobs.map((j) => j.file)).find(
-        (f) => f.id === fileId,
-      );
-      if (order.status === 'cancelled' || !file) throw reject('NOT_FOUND');
-      return this.download(file);
+  getBatch(batchId: string): Promise<Tagged<Batch>> {
+    return this.span('getBatch', 'GET', '/batches/:id', async () => {
+      const { batch } = this.visible(batchId);
+      return { value: batch, etag: etagOf(batch) };
     });
   }
 
-  downloadQuoteFile(orderId: string, quoteId: string): Promise<Download> {
-    return this.span('downloadQuoteFile', 'GET', '/orders/:id/quotes/:quoteId/file', async () => {
-      const { order } = this.visible(orderId);
-      if (order.currentQuote?.id !== quoteId) throw reject('NOT_FOUND');
-      return this.download(order.currentQuote.document);
+  downloadBatchFile(batchId: string, orderId: string, fileId: string): Promise<Download> {
+    return this.span(
+      'downloadBatchFile',
+      'GET',
+      '/batches/:id/orders/:orderId/files/:fileId',
+      async () => {
+        const { batch } = this.visible(batchId);
+        const item = batch.items.find((i) => i.orderId === orderId);
+        const file = item
+          ? [...item.jobs.map((j) => j.file), ...(item.generalInstructions?.files ?? [])].find(
+              (f) => f.id === fileId,
+            )
+          : undefined;
+        if (!file) throw reject('NOT_FOUND');
+        return this.download(file);
+      },
+    );
+  }
+
+  downloadQuoteFile(batchId: string, quoteId: string): Promise<Download> {
+    return this.span('downloadQuoteFile', 'GET', '/batches/:id/quotes/:quoteId/file', async () => {
+      const { batch } = this.visible(batchId);
+      if (batch.currentQuote?.id !== quoteId) throw reject('NOT_FOUND');
+      return this.download(batch.currentQuote.document);
     });
   }
 
-  markCollected(
-    orderId: string,
-    input: { readonly revision: number },
-    pre: Preconditions,
-  ): Promise<CommandResult<Order>> {
-    return this.span('markCollected', 'POST', '/orders/:id/collected', async () =>
-      this.orderCommand(orderId, pre, { revision: input.revision }, 200, (stored) => {
-        const { order } = stored;
-        if (order.status !== 'ready') throw reject('INVALID_STATE');
-        if (input.revision !== order.revision) throw reject('VERSION_MISMATCH');
+  markCollected(batchId: string, pre: Preconditions): Promise<CommandResult<Batch>> {
+    return this.span('markCollected', 'POST', '/batches/:id/collected', async () =>
+      this.batchCommand(batchId, pre, {}, 200, (stored) => {
+        if (stored.batch.status !== 'open') throw reject('INVALID_STATE');
+        if (stored.batch.items.length === 0) throw reject('EMPTY_BATCH');
         return this.update(stored, {
           status: 'files_collected',
           collectedAt: this.clock().toISOString(),
@@ -280,29 +384,22 @@ export class PrintApiMemory implements PrintApi {
   }
 
   submitQuote(
-    orderId: string,
-    input: { readonly amountCents: number; readonly orderRevision: number; readonly file: Upload },
+    batchId: string,
+    input: { readonly amountCents: number; readonly file: Upload },
     pre: Preconditions,
-  ): Promise<CommandResult<Order>> {
-    return this.span('submitQuote', 'POST', '/orders/:id/quotes', async () => {
-      this.visible(orderId);
+  ): Promise<CommandResult<Batch>> {
+    return this.span('submitQuote', 'POST', '/batches/:id/quotes', async () => {
+      this.visible(batchId);
       const mime = documentMime(input.file.bytes);
-      const fields = {
-        amountCents: input.amountCents,
-        orderRevision: input.orderRevision,
-        file: sha256(input.file.bytes),
-      };
-      return this.orderCommand(orderId, pre, fields, 201, (stored) => {
-        const { order } = stored;
-        if (order.status !== 'files_collected' && order.status !== 'quote_rejected') {
+      const fields = { amountCents: input.amountCents, file: sha256(input.file.bytes) };
+      return this.batchCommand(batchId, pre, fields, 201, (stored) => {
+        const { batch } = stored;
+        if (batch.status !== 'files_collected' && batch.status !== 'quote_rejected') {
           throw reject('INVALID_STATE');
         }
-        if (input.orderRevision !== order.revision) throw reject('VERSION_MISMATCH');
-        const previous = order.currentQuote?.revision ?? 0;
         const quote: Quote = {
           id: randomUUID(),
-          revision: previous + 1,
-          orderRevision: order.revision,
+          revision: (batch.currentQuote?.revision ?? 0) + 1,
           amountCents: input.amountCents,
           currency: 'BRL',
           document: this.storeFile(input.file.filename, mime, input.file.bytes),
@@ -317,30 +414,29 @@ export class PrintApiMemory implements PrintApi {
   }
 
   markPrinted(
-    orderId: string,
-    input: { readonly revision: number; readonly quoteId: string },
+    batchId: string,
+    input: { readonly quoteId: string },
     pre: Preconditions,
-  ): Promise<CommandResult<Order>> {
-    return this.span('markPrinted', 'POST', '/orders/:id/printed', async () =>
-      this.orderCommand(
-        orderId,
-        pre,
-        { revision: input.revision, quoteId: input.quoteId.toLowerCase() },
-        200,
-        (stored) => {
-          const { order } = stored;
-          const quote = order.currentQuote;
-          if (order.status !== 'quote_approved' || quote?.decision !== 'approved') {
-            throw reject('INVALID_STATE');
-          }
-          if (input.revision !== order.revision || input.quoteId !== quote.id) {
-            throw reject('VERSION_MISMATCH');
-          }
-          const printedAt = this.clock().toISOString();
-          this.bill(order, quote, printedAt);
-          return this.update(stored, { status: 'printed', printedAt });
-        },
-      ),
+  ): Promise<CommandResult<Batch>> {
+    return this.span('markPrinted', 'POST', '/batches/:id/printed', async () =>
+      this.batchCommand(batchId, pre, { quoteId: input.quoteId.toLowerCase() }, 200, (stored) => {
+        const { batch } = stored;
+        const quote = batch.currentQuote;
+        if (batch.status !== 'quote_approved' || quote?.decision !== 'approved') {
+          throw reject('INVALID_STATE');
+        }
+        if (input.quoteId !== quote.id) throw reject('VERSION_MISMATCH');
+        const printedAt = this.clock().toISOString();
+        this.charge(printedAt, {
+          kind: 'batch',
+          batchId: batch.id,
+          reference: batch.reference,
+          quoteId: quote.id,
+          amountCents: quote.amountCents,
+          printedAt,
+        });
+        return this.update(stored, { status: 'printed', printedAt });
+      }),
     );
   }
 
@@ -419,34 +515,76 @@ export class PrintApiMemory implements PrintApi {
     });
   }
 
-  private mustGet(orderId: string): StoredOrder {
-    const stored = this.orders.get(orderId);
+  private mustGet(batchId: string): StoredBatch {
+    const stored = this.batches.get(batchId);
     if (!stored) throw reject('NOT_FOUND');
     return stored;
   }
 
   /** Lookup scoped to this credential's supplier: foreign ids are 404. */
-  private visible(orderId: string): StoredOrder {
-    if (!UUID_RE.test(orderId)) throw reject('NOT_FOUND');
-    const stored = this.orders.get(orderId);
+  private visible(batchId: string): StoredBatch {
+    if (!UUID_RE.test(batchId)) throw reject('NOT_FOUND');
+    const stored = this.batches.get(batchId);
     if (!stored || stored.supplierId !== this.supplierId) throw reject('NOT_FOUND');
     return stored;
   }
 
-  private update(stored: StoredOrder, patch: Partial<Order>): Order {
-    const next: Order = { ...stored.order, ...patch, version: stored.order.version + 1 };
-    stored.order = next;
+  /** The supplier's one current (open through printed) batch, if any. */
+  private currentOf(supplierId: string): StoredBatch | undefined {
+    return [...this.batches.values()].find(
+      (s) => s.supplierId === supplierId && CURRENT.includes(s.batch.status),
+    );
+  }
+
+  private createBatch(supplierId: string, items: readonly BatchItem[]): void {
+    this.batchSequence++;
+    const now = this.clock().toISOString();
+    const batch: Batch = {
+      id: randomUUID(),
+      reference: `LOT-${String(this.batchSequence).padStart(4, '0')}`,
+      status: 'open',
+      version: 1,
+      itemCount: items.length,
+      // Strictly increasing createdAt keeps keyset order deterministic.
+      createdAt: new Date(Date.parse(now) + this.batchSequence).toISOString(),
+      collectedAt: null,
+      printedAt: null,
+      receivedAt: null,
+      approvedAmountCents: null,
+      items,
+      currentQuote: null,
+      cancellationReason: null,
+    };
+    this.batches.set(batch.id, { batch, supplierId });
+  }
+
+  /** Next open batch: returning members first, then the queued requests. */
+  private formNext(supplierId: string, members: readonly BatchItem[]): void {
+    const items = [...members, ...(this.queued.get(supplierId) ?? [])];
+    this.queued.delete(supplierId);
+    if (items.length > 0) this.createBatch(supplierId, items);
+  }
+
+  private update(stored: StoredBatch, patch: Partial<Batch>): Batch {
+    const items = patch.items ?? stored.batch.items;
+    const next: Batch = {
+      ...stored.batch,
+      ...patch,
+      itemCount: items.length,
+      version: stored.batch.version + 1,
+    };
+    stored.batch = next;
     return next;
   }
 
   private staffDecide(
-    orderId: string,
+    batchId: string,
     decision: 'approved' | 'rejected',
     reason: string | null,
-  ): Order {
-    const stored = this.mustGet(orderId);
-    const quote = stored.order.currentQuote;
-    if (stored.order.status !== 'quote_pending' || quote?.decision !== 'pending') {
+  ): Batch {
+    const stored = this.mustGet(batchId);
+    const quote = stored.batch.currentQuote;
+    if (stored.batch.status !== 'quote_pending' || quote?.decision !== 'pending') {
       throw reject('INVALID_STATE');
     }
     const decided: Quote = {
@@ -462,19 +600,18 @@ export class PrintApiMemory implements PrintApi {
     });
   }
 
-  private orderCommand(
-    orderId: string,
+  private batchCommand(
+    batchId: string,
     pre: Preconditions,
     fields: Record<string, string | number>,
     status: 200 | 201,
-    run: (stored: StoredOrder) => Order,
-  ): CommandResult<Order> {
-    const stored = this.visible(orderId);
-    return this.idempotent(`order:${orderId}`, pre, fields, status, () => {
-      const current = stored.order;
-      if (pre.ifMatch !== etagOf(current.id, current.version)) throw reject('VERSION_MISMATCH');
+    run: (stored: StoredBatch) => Batch,
+  ): CommandResult<Batch> {
+    const stored = this.visible(batchId);
+    return this.idempotent(`batch:${batchId}`, pre, fields, status, () => {
+      if (pre.ifMatch !== etagOf(stored.batch)) throw reject('VERSION_MISMATCH');
       const next = run(stored);
-      return { value: next, etag: etagOf(next.id, next.version) };
+      return { value: next, etag: etagOf(next) };
     });
   }
 
@@ -503,7 +640,6 @@ export class PrintApiMemory implements PrintApi {
   private storeFile(name: string, mime: string, bytes: Uint8Array): PrintFile {
     const id = randomUUID();
     this.blobs.set(id, bytes);
-    this.fileNames.set(id, name);
     return { id, name, mime, bytes: bytes.byteLength, sha256: sha256(bytes) };
   }
 
@@ -522,7 +658,8 @@ export class PrintApiMemory implements PrintApi {
     };
   }
 
-  private bill(order: Order, quote: Quote, printedAt: string): void {
+  /** Bill a printed batch (or a historical order) once, in its São Paulo month. */
+  private charge(printedAt: string, item: CloseItem): void {
     const competence = competenceOf(new Date(printedAt));
     let close = this.closes.get(competence);
     if (!close) {
@@ -539,13 +676,7 @@ export class PrintApiMemory implements PrintApi {
       };
       this.closes.set(competence, close);
     }
-    close.items.push({
-      orderId: order.id,
-      reference: order.reference,
-      quoteId: quote.id,
-      amountCents: quote.amountCents,
-      printedAt,
-    });
+    close.items.push(item);
     close.version++;
   }
 
@@ -586,39 +717,39 @@ export class PrintApiMemory implements PrintApi {
         submittedAt: close.submittedAt,
         acceptedAt: close.acceptedAt,
       },
-      etag: etagOf(close.id, close.version),
+      etag: `"${close.id}:${close.version}"`,
     };
   }
 }
 
-function etagOf(id: string, version: number): string {
-  return `"${id}:${version}"`;
+function etagOf(batch: Batch): string {
+  return `"${batch.id}:${batch.version}"`;
 }
 
-function summary(order: Order) {
+function summary(batch: Batch) {
   return {
-    id: order.id,
-    reference: order.reference,
-    title: order.title,
-    revision: order.revision,
-    version: order.version,
-    status: order.status,
-    createdAt: order.createdAt,
-    collectedAt: order.collectedAt,
-    printedAt: order.printedAt,
-    approvedAmountCents: order.approvedAmountCents,
+    id: batch.id,
+    reference: batch.reference,
+    status: batch.status,
+    version: batch.version,
+    itemCount: batch.itemCount,
+    createdAt: batch.createdAt,
+    collectedAt: batch.collectedAt,
+    printedAt: batch.printedAt,
+    receivedAt: batch.receivedAt,
+    approvedAmountCents: batch.approvedAmountCents,
   };
 }
 
-function encodeCursor(order: Order, status: OrderStatus | undefined): string {
-  return Buffer.from(JSON.stringify([order.createdAt, order.id, status ?? null])).toString(
+function encodeCursor(batch: Batch, status: BatchStatus | undefined): string {
+  return Buffer.from(JSON.stringify([batch.createdAt, batch.id, status ?? null])).toString(
     'base64url',
   );
 }
 
 function decodeCursor(
   cursor: string,
-  status: OrderStatus | undefined,
+  status: BatchStatus | undefined,
 ): { createdAt: string; id: string } | null {
   try {
     const parsed: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
@@ -643,17 +774,7 @@ function sha256(bytes: Uint8Array): string {
 /** Magic-byte detection, as upstream: PDF/JPEG/PNG/WebP only, ≤ 5 MiB. */
 function documentMime(bytes: Uint8Array): string {
   if (bytes.byteLength > DOCUMENT_MAX_BYTES) throw reject('FILE_TOO_LARGE');
-  const head = Buffer.from(bytes.subarray(0, 12));
-  if (head.subarray(0, 5).toString('latin1') === '%PDF-') return 'application/pdf';
-  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg';
-  if (head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
-    return 'image/png';
-  }
-  if (
-    head.subarray(0, 4).toString('latin1') === 'RIFF' &&
-    head.subarray(8, 12).toString('latin1') === 'WEBP'
-  ) {
-    return 'image/webp';
-  }
-  throw reject('UNSUPPORTED_MEDIA_TYPE');
+  const mime = sniffDocumentMime(bytes);
+  if (!mime) throw reject('UNSUPPORTED_MEDIA_TYPE');
+  return mime;
 }

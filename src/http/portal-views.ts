@@ -15,13 +15,19 @@ import {
 } from '../domain/monthly-close.js';
 import {
   availableAction,
-  ORDER_STATUS_LABELS,
-  ORDER_STATUSES,
-  type Order,
-  type OrderPage,
-  type OrderStatus,
+  BATCH_PROGRESS_STEPS,
+  BATCH_STATUS_LABELS,
+  type Batch,
+  type BatchItem,
+  type BatchPage,
+  fileCount,
+  itemFiles,
   type PrintFile,
-} from '../domain/print-order.js';
+  type PrintJob,
+  progressStep,
+  totalCopies,
+  waitingMessage,
+} from '../domain/print-batch.js';
 
 type Html = HtmlEscapedString | Promise<HtmlEscapedString>;
 
@@ -46,7 +52,8 @@ function layout(title: string, body: Html, nav?: { csrfToken: string; active: st
   ${
     nav
       ? html`<nav>
-    <a href="/orders"${nav.active === 'orders' ? html` aria-current="page"` : ''}>Pedidos</a>
+    <a href="/"${nav.active === 'home' ? html` aria-current="page"` : ''}>Lote atual</a>
+    <a href="/batches"${nav.active === 'history' ? html` aria-current="page"` : ''}>Lotes anteriores</a>
     <a href="/invoices"${nav.active === 'invoices' ? html` aria-current="page"` : ''}>Notas fiscais</a>
     <form method="post" action="/logout" class="inline">
       <input type="hidden" name="_csrf" value="${nav.csrfToken}">
@@ -83,17 +90,6 @@ function fileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1).replace('.', ',')} MB`;
 }
 
-/** Confirmation dialog inside a form; portal.js intercepts the first submit. */
-function confirmDialog(id: string, question: string, confirmLabel: string): Html {
-  return html`<dialog id="${id}" class="confirm">
-  <p>${question}</p>
-  <div class="actions">
-    <button type="submit" name="confirmed" value="1" data-confirmed>${confirmLabel}</button>
-    <button type="button" class="secondary" data-close>Voltar</button>
-  </div>
-</dialog>`;
-}
-
 // ── login ──
 
 export function loginPage(csrfToken: string, b?: Banner): Html {
@@ -112,91 +108,7 @@ export function loginPage(csrfToken: string, b?: Banner): Html {
   );
 }
 
-// ── order list ──
-
-export interface OrdersView {
-  readonly csrfToken: string;
-  readonly status: OrderStatus | undefined;
-  /** null when the upstream could not be reached. */
-  readonly page: OrderPage | null;
-  readonly cursor: string | undefined;
-  readonly back: readonly string[];
-  readonly banner?: Banner;
-}
-
-function ordersHref(
-  status: OrderStatus | undefined,
-  cursor: string | undefined,
-  back: readonly string[],
-): string {
-  const params = new URLSearchParams();
-  if (status) params.set('status', status);
-  if (cursor) params.set('cursor', cursor);
-  for (const b of back) params.append('back', b);
-  const query = params.toString();
-  return query ? `/orders?${query}` : '/orders';
-}
-
-export function ordersPage(view: OrdersView): Html {
-  const { page, status, cursor, back } = view;
-  const previous =
-    back.length > 0
-      ? ordersHref(status, back[back.length - 1] || undefined, back.slice(0, -1))
-      : null;
-  const next = page?.nextCursor
-    ? ordersHref(status, page.nextCursor, [...back, cursor ?? ''])
-    : null;
-
-  let content: Html | string;
-  if (page === null) {
-    content = html`<p class="empty unavailable" data-state="unavailable">Não foi possível consultar os pedidos agora (serviço indisponível). Use <strong>Atualizar</strong> para tentar de novo.</p>`;
-  } else if (page.items.length === 0) {
-    content = html`<p class="empty" data-state="empty">Nenhum pedido${status ? ' com este status' : ''}.</p>`;
-  } else {
-    content = html`<table class="orders">
-  <thead><tr><th>Referência</th><th>Título</th><th>Status</th><th>Criado em</th><th>Valor aprovado</th><th></th></tr></thead>
-  <tbody>
-  ${page.items.map(
-    (o) => html`<tr>
-    <td data-label="Referência">${o.reference}</td>
-    <td data-label="Título">${o.title}</td>
-    <td data-label="Status"><span class="status ${o.status}">${ORDER_STATUS_LABELS[o.status]}</span></td>
-    <td data-label="Criado em">${dateTime(o.createdAt)}</td>
-    <td data-label="Valor aprovado">${o.approvedAmountCents === null ? '—' : formatCents(o.approvedAmountCents)}</td>
-    <td><a class="button" href="/orders/${encodeURIComponent(o.id)}">Ver pedido</a></td>
-  </tr>`,
-  )}
-  </tbody>
-</table>`;
-  }
-
-  return layout(
-    'Pedidos',
-    html`<section>
-  <h1>Pedidos</h1>
-  ${banner(view.banner)}
-  <form method="get" action="/orders" class="filters">
-    <label for="status">Status</label>
-    <select id="status" name="status">
-      <option value="">Todos</option>
-      ${ORDER_STATUSES.map(
-        (s) =>
-          html`<option value="${s}"${s === status ? html` selected` : ''}>${ORDER_STATUS_LABELS[s]}</option>`,
-      )}
-    </select>
-    <button type="submit">Atualizar</button>
-  </form>
-  ${content}
-  <nav class="pager">
-    ${previous ? html`<a class="button secondary" href="${previous}">Anterior</a>` : html`<span class="button secondary disabled" aria-disabled="true">Anterior</span>`}
-    ${next ? html`<a class="button secondary" href="${next}">Próxima</a>` : html`<span class="button secondary disabled" aria-disabled="true">Próxima</span>`}
-  </nav>
-</section>`,
-    { csrfToken: view.csrfToken, active: 'orders' },
-  );
-}
-
-// ── order detail ──
+// ── batch (home, history detail) ──
 
 /** Form state for an action: reused verbatim after an ambiguous failure. */
 export interface ActionForm {
@@ -205,11 +117,8 @@ export interface ActionForm {
   readonly amountText?: string;
 }
 
-export interface OrderView {
-  readonly csrfToken: string;
-  readonly order: Order;
-  readonly form: ActionForm;
-  readonly banner?: Banner;
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
 }
 
 function fileLine(href: string, file: PrintFile, label: string): Html {
@@ -221,161 +130,295 @@ function fileLine(href: string, file: PrintFile, label: string): Html {
 </div>`;
 }
 
-function hiddenCommon(view: OrderView): Html {
-  return html`<input type="hidden" name="_csrf" value="${view.csrfToken}">
-  <input type="hidden" name="idempotencyKey" value="${view.form.idempotencyKey}">
-  <input type="hidden" name="etag" value="${view.form.etag}">`;
+function batchApi(batch: Batch): string {
+  return `/api/print/v2/batches/${encodeURIComponent(batch.id)}`;
 }
 
-function quoteBlock(order: Order): Html | string {
-  const quote = order.currentQuote;
+function progressBar(batch: Batch): Html | string {
+  const reached = progressStep(batch.status);
+  if (reached < 0) return '';
+  return html`<ol class="progress" data-ttp="progress" aria-label="Andamento do lote">
+  ${BATCH_PROGRESS_STEPS.map(
+    (step, i) =>
+      html`<li class="${i < reached ? 'done' : i === reached ? 'current' : 'todo'}"${i === reached ? html` aria-current="step"` : ''}>${step}</li>
+`,
+  )}
+</ol>`;
+}
+
+function batchFacts(batch: Batch): Html {
+  const row = (label: string, value: string | null) =>
+    value === null ? '' : html`<dt>${label}</dt><dd>${dateTime(value)}</dd>`;
+  return html`<dl class="facts">
+  <dt>Status</dt><dd><span class="status ${batch.status}">${BATCH_STATUS_LABELS[batch.status]}</span></dd>
+  ${row('Criado em', batch.createdAt)}
+  ${row('Retirado em', batch.collectedAt)}
+  ${row('Impresso em', batch.printedAt)}
+  ${row('Recebido em', batch.receivedAt)}
+  ${batch.approvedAmountCents === null ? '' : html`<dt>Valor aprovado</dt><dd>${formatCents(batch.approvedAmountCents)}</dd>`}
+</dl>`;
+}
+
+function quoteBlock(batch: Batch): Html | string {
+  const quote = batch.currentQuote;
   if (!quote) return '';
-  const href = `/api/print/v1/orders/${encodeURIComponent(order.id)}/quotes/${encodeURIComponent(quote.id)}/file`;
+  const href = `${batchApi(batch)}/quotes/${encodeURIComponent(quote.id)}/file`;
   const rejected =
     quote.decision === 'rejected' && quote.rejectionReason
       ? html`<p class="banner error">Orçamento rejeitado. Motivo: ${quote.rejectionReason}</p>`
       : '';
   return html`<div class="quote">
   <h3>Orçamento ${quote.revision}</h3>
-  <p>Valor: <strong>${formatCents(quote.amountCents)}</strong> · enviado em ${dateTime(quote.submittedAt)}</p>
+  <p>Valor total: <strong>${formatCents(quote.amountCents)}</strong> · enviado em ${dateTime(quote.submittedAt)}</p>
   ${rejected}
   ${fileLine(href, quote.document, 'Baixar orçamento')}
 </div>`;
 }
 
-function collectForm(view: OrderView, base: string): Html {
-  const { order } = view;
+function hiddenCommon(csrfToken: string, form: ActionForm): Html {
+  return html`<input type="hidden" name="_csrf" value="${csrfToken}">
+  <input type="hidden" name="idempotencyKey" value="${form.idempotencyKey}">
+  <input type="hidden" name="etag" value="${form.etag}">`;
+}
+
+/** Confirmation dialog inside a form; portal.js intercepts the first submit. */
+function confirmDialog(id: string, question: string, confirmLabel: string): Html {
+  return html`<dialog id="${id}" class="confirm">
+  <p>${question}</p>
+  <div class="actions">
+    <button type="submit" name="confirmed" value="1" data-confirmed>${confirmLabel}</button>
+    <button type="button" class="secondary" data-close>Voltar</button>
+  </div>
+</dialog>`;
+}
+
+function collectForm(view: CurrentBatchView, base: string): Html {
+  const { batch } = view;
+  const files = plural(fileCount(batch), 'arquivo', 'arquivos');
+  const requests = plural(batch.items.length, 'solicitação', 'solicitações');
   return html`<form method="post" action="${base}/collected" class="action" data-confirm="confirm-collect">
-  ${hiddenCommon(view)}
-  <input type="hidden" name="revision" value="${order.revision}">
-  <label class="check"><input type="checkbox" name="checked" value="1" required> Conferi todos os arquivos desta revisão</label>
-  <button type="submit">Arquivos retirados</button>
-  ${confirmDialog('confirm-collect', `Confirmar a retirada dos arquivos da revisão ${order.revision}?`, 'Confirmar retirada')}
+  ${hiddenCommon(view.csrfToken, view.form)}
+  <label class="check"><input type="checkbox" name="checked" value="1" required> Conferi todos os arquivos</label>
+  <button type="submit" data-ttp="action" data-action="collect">Retirei os arquivos</button>
+  ${confirmDialog('confirm-collect', `Confirmar a retirada dos ${files} de ${requests} do lote ${batch.reference}?`, 'Confirmar retirada')}
 </form>`;
 }
 
-function quoteForm(view: OrderView, base: string): Html {
-  const { order } = view;
-  const label = order.status === 'quote_rejected' ? 'Enviar novo orçamento' : 'Enviar orçamento';
-  return html`${quoteBlock(order)}
+function quoteForm(view: CurrentBatchView, base: string): Html {
+  const { batch } = view;
+  return html`${quoteBlock(batch)}
 <form method="post" action="${base}/quotes" enctype="multipart/form-data" class="action" data-confirm="confirm-quote">
-  <h3>${label}</h3>
-  ${hiddenCommon(view)}
-  <input type="hidden" name="orderRevision" value="${order.revision}">
-  <label for="amount">Valor do orçamento</label>
+  <h3>Orçamento do lote</h3>
+  ${hiddenCommon(view.csrfToken, view.form)}
+  <label for="amount">Valor total do orçamento (R$)</label>
   <input id="amount" name="amount" inputmode="decimal" placeholder="R$ 0,00" required value="${view.form.amountText ?? ''}">
   <label for="quote-file">Arquivo do orçamento</label>
   <input id="quote-file" name="file" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" required>
-  <p class="hint">PDF, JPEG, PNG ou WebP, até 5 MB.</p>
-  <button type="submit">${label}</button>
-  ${confirmDialog('confirm-quote', 'Confirmar o envio do orçamento ao Financeiro?', 'Confirmar envio')}
+  <p class="hint">Um orçamento para o lote inteiro. PDF, JPEG, PNG ou WebP, até 5 MB.</p>
+  <button type="submit" data-ttp="action" data-action="upload-quote">Enviar orçamento</button>
+  ${confirmDialog('confirm-quote', `Confirmar o envio do orçamento do lote ${batch.reference} ao Financeiro?`, 'Confirmar envio')}
 </form>`;
 }
 
-function printForm(view: OrderView, base: string): Html {
-  const { order } = view;
+function printForm(view: CurrentBatchView, base: string): Html {
+  const { batch } = view;
   const amount =
-    order.approvedAmountCents !== null
-      ? html`: <strong>${formatCents(order.approvedAmountCents)}</strong>`
+    batch.approvedAmountCents !== null
+      ? html`: <strong>${formatCents(batch.approvedAmountCents)}</strong>`
       : '';
-  return html`${quoteBlock(order)}
+  return html`${quoteBlock(batch)}
 <p class="banner success">Orçamento aprovado${amount}.</p>
 <form method="post" action="${base}/printed" class="action" data-confirm="confirm-print">
-  ${hiddenCommon(view)}
-  <input type="hidden" name="revision" value="${order.revision}">
-  <input type="hidden" name="quoteId" value="${order.currentQuote?.id ?? ''}">
-  <button type="submit">Marcar como impresso</button>
-  ${confirmDialog('confirm-print', 'Confirmar que este pedido foi impresso?', 'Confirmar impressão')}
+  ${hiddenCommon(view.csrfToken, view.form)}
+  <input type="hidden" name="quoteId" value="${batch.currentQuote?.id ?? ''}">
+  <button type="submit" data-ttp="action" data-action="mark-printed">Marcar como impresso</button>
+  ${confirmDialog('confirm-print', `Confirmar que todo o lote ${batch.reference} foi impresso?`, 'Confirmar impressão')}
 </form>`;
 }
 
-/** Read-only status line when the print shop has nothing to do. */
-function statusNote(order: Order): Html | string {
-  switch (order.status) {
-    case 'quote_pending':
-      return html`${quoteBlock(order)}<p class="banner info">Aguardando aprovação do Financeiro.</p>`;
-    case 'printed':
-      return html`${quoteBlock(order)}<p class="banner success">Impresso em ${dateTime(order.printedAt)}.</p>`;
-    case 'cancelled': {
-      const reason = order.cancellationReason ? html`. Motivo: ${order.cancellationReason}` : '';
-      return html`<p class="banner error">Pedido cancelado${reason}.</p>`;
-    }
-    default:
-      return quoteBlock(order);
-  }
-}
-
-function orderAction(view: OrderView): Html | string {
-  const base = `/orders/${encodeURIComponent(view.order.id)}`;
-  switch (availableAction(view.order)) {
+/** The single action allowed in the batch's state, or its waiting message. */
+function batchAction(view: CurrentBatchView): Html | string {
+  const base = `/batches/${encodeURIComponent(view.batch.id)}`;
+  switch (availableAction(view.batch)) {
     case 'collect':
       return collectForm(view, base);
-    case 'quote':
+    case 'upload-quote':
       return quoteForm(view, base);
-    case 'print':
+    case 'mark-printed':
       return printForm(view, base);
-    default:
-      return statusNote(view.order);
+    default: {
+      const waiting = waitingMessage(view.batch.status);
+      return html`${quoteBlock(view.batch)}${waiting ? html`<p class="banner info" data-ttp="status-message">${waiting}</p>` : ''}`;
+    }
   }
 }
 
-export function orderPage(view: OrderView): Html {
-  const { order } = view;
-  const api = `/api/print/v1/orders/${encodeURIComponent(order.id)}`;
-  return layout(
-    `Pedido ${order.reference}`,
-    html`<section>
-  <p><a href="/orders">← Pedidos</a></p>
-  <h1>${order.reference} · ${order.title}</h1>
-  ${banner(view.banner)}
-  <dl class="facts">
-    <dt>Status</dt><dd><span class="status ${order.status}">${ORDER_STATUS_LABELS[order.status]}</span></dd>
-    <dt>Revisão</dt><dd>${order.revision}</dd>
-    <dt>Criado em</dt><dd>${dateTime(order.createdAt)}</dd>
-    <dt>Retirado em</dt><dd>${dateTime(order.collectedAt)}</dd>
-    <dt>Impresso em</dt><dd>${dateTime(order.printedAt)}</dd>
-  </dl>
-  <p><a class="button secondary" href="/orders/${encodeURIComponent(order.id)}">Consultar novamente</a></p>
+function fileCard(batch: Batch, item: BatchItem, file: PrintFile, job: PrintJob | null): Html {
+  const href = `${batchApi(batch)}/orders/${encodeURIComponent(item.orderId)}/files/${encodeURIComponent(file.id)}`;
+  const details = job
+    ? html`<h3>${job.title}</h3>
+    <p class="filename" data-ttp="file-name">${file.name}</p>
+    <p class="meta"><span data-ttp="file-size" data-bytes="${file.bytes}">${fileSize(file.bytes)}</span> · ${file.mime}</p>
+    <p><strong>Cópias:</strong> <span data-ttp="copies">${job.copies}</span></p>
+    <p><strong>Instruções de impressão:</strong></p>
+    <p class="instructions" data-ttp="instructions">${job.instructions}</p>`
+    : html`<h3>Não identificadas</h3>
+    <p class="filename" data-ttp="file-name">${file.name}</p>
+    <p class="meta"><span data-ttp="file-size" data-bytes="${file.bytes}">${fileSize(file.bytes)}</span> · ${file.mime}</p>
+    <p class="hint">Sem vínculo seguro — consulte instruções gerais</p>`;
+  return html`<li class="file-card" data-ttp="file" data-file-id="${file.id}">
+    ${details}
+    <a class="button" data-ttp="download" href="${href}" download>Baixar arquivo</a>
+  </li>`;
+}
+
+function requestBlock(batch: Batch, item: BatchItem): Html {
+  const general = item.generalInstructions;
+  return html`<article class="request" data-ttp="item" data-order-id="${item.orderId}">
+  <h2><span data-ttp="item-reference">${item.reference}</span> · ${item.title}</h2>
+  ${item.previouslyCancelledIn ? html`<p class="banner warning" data-ttp="previously-cancelled">Este item esteve no lote ${item.previouslyCancelledIn}, cancelado — confira antes de imprimir</p>` : ''}
+  <ol class="cards">
+  ${itemFiles(item).map(({ file, job }) => fileCard(batch, item, file, job))}
+  </ol>
   ${
-    order.generalInstructions
-      ? html`<section id="general-instructions">
-    <h2>Instruções gerais</h2>
-    <p>Estas instruções se aplicam ao pedido completo, sem vínculo por arquivo.</p>
-    <p class="instructions">${order.generalInstructions.text}</p>
-    <ul>${order.generalInstructions.files.map((file) => html`<li>${order.status === 'cancelled' ? file.name : fileLine(`${api}/files/${encodeURIComponent(file.id)}`, file, 'Baixar arquivo')}</li>`)}</ul>
+    general
+      ? html`<section class="general">
+    <h3>Instruções gerais</h3>
+    <p class="hint">Instruções desta solicitação sem vínculo seguro com um arquivo.</p>
+    <p class="instructions" data-ttp="general-instructions">${general.text}</p>
   </section>`
       : ''
   }
-  <h2>Arquivos</h2>
-  <ol class="jobs">
-  ${order.jobs.map(
-    (job) => html`<li class="job">
-    <h3>${job.title}</h3>
-    <p><strong>Cópias:</strong> ${job.copies}</p>
-    <p><strong>Instruções de impressão:</strong></p>
-    <p class="instructions">${job.instructions}</p>
-    ${order.status === 'cancelled' ? '' : fileLine(`${api}/files/${encodeURIComponent(job.file.id)}`, job.file, 'Baixar arquivo')}
-  </li>`,
-  )}
-  </ol>
-  <h2>Andamento</h2>
-  ${orderAction(view)}
+</article>`;
+}
+
+/** The batch with its header, progress, optional actions and every request/file card. */
+function batchSection(batch: Batch, heading: 'h1' | 'h2', actions: Html | string): Html {
+  const title = html`Lote <span data-ttp="batch-reference">${batch.reference}</span>`;
+  const counts = [
+    plural(batch.itemCount, 'solicitação', 'solicitações'),
+    plural(fileCount(batch), 'arquivo', 'arquivos'),
+    plural(totalCopies(batch), 'cópia', 'cópias'),
+  ].join(' · ');
+  const cancelled =
+    batch.status === 'cancelled'
+      ? html`<p class="banner error">Lote cancelado${batch.cancellationReason ? html`. Motivo: ${batch.cancellationReason}` : ''}.</p>`
+      : '';
+  return html`<section class="batch" data-ttp="batch" data-batch-id="${batch.id}" data-status="${batch.status}">
+  ${heading === 'h1' ? html`<h1>${title}</h1>` : html`<h2>${title}</h2>`}
+  <p class="meta">${counts}</p>
+  ${progressBar(batch)}
+  ${batchFacts(batch)}
+  ${cancelled}
+  ${actions}
+  ${batch.items.map((item) => requestBlock(batch, item))}
+</section>`;
+}
+
+export interface CurrentBatchView {
+  readonly csrfToken: string;
+  readonly batch: Batch;
+  readonly form: ActionForm;
+}
+
+export interface HomeView {
+  readonly csrfToken: string;
+  /** null = no current batch; 'unavailable' = the upstream could not be read. */
+  readonly current: CurrentBatchView | null | 'unavailable';
+  readonly banner?: Banner;
+}
+
+export function homePage(view: HomeView): Html {
+  const { current } = view;
+  let content: Html;
+  if (current === 'unavailable') {
+    content = html`<h1>Lote atual</h1>
+${banner(view.banner)}
+<p><a class="button" href="/">Atualizar</a></p>`;
+  } else if (current === null) {
+    content = html`<h1>Lote atual</h1>
+${banner(view.banner)}
+<p class="empty" data-ttp="empty">Nenhum pedido aguardando</p>`;
+  } else {
+    content = html`${banner(view.banner)}
+<p><a class="button secondary" href="/">Atualizar</a></p>
+${batchSection(current.batch, 'h1', batchAction(current))}`;
+  }
+  return layout('Lote atual', html`<section>${content}</section>`, {
+    csrfToken: view.csrfToken,
+    active: 'home',
+  });
+}
+
+/** Read-only detail of any batch (history), same cards, no actions. */
+export function batchDetailPage(csrfToken: string, batch: Batch): Html {
+  return layout(
+    `Lote ${batch.reference}`,
+    html`<section>
+  <p><a href="/batches">← Lotes anteriores</a></p>
+  ${batchSection(batch, 'h1', quoteBlock(batch))}
 </section>`,
-    { csrfToken: view.csrfToken, active: 'orders' },
+    { csrfToken, active: 'history' },
   );
 }
 
-/** Order page when the upstream cannot be read at all. */
-export function orderUnavailablePage(csrfToken: string, orderId: string, b: Banner): Html {
+// ── history ──
+
+export interface HistoryView {
+  readonly csrfToken: string;
+  /** null when the upstream could not be reached. */
+  readonly page: BatchPage | null;
+  readonly cursor: string | undefined;
+  readonly back: readonly string[];
+}
+
+function historyHref(cursor: string | undefined, back: readonly string[]): string {
+  const params = new URLSearchParams();
+  if (cursor) params.set('cursor', cursor);
+  for (const b of back) params.append('back', b);
+  const query = params.toString();
+  return query ? `/batches?${query}` : '/batches';
+}
+
+export function historyPage(view: HistoryView): Html {
+  const { page, cursor, back } = view;
+  const previous =
+    back.length > 0 ? historyHref(back[back.length - 1] || undefined, back.slice(0, -1)) : null;
+  const next = page?.nextCursor ? historyHref(page.nextCursor, [...back, cursor ?? '']) : null;
+  let content: Html;
+  if (page === null) {
+    content = html`<p class="empty unavailable" data-state="unavailable">Não foi possível consultar os lotes agora (serviço indisponível). Use <a href="/batches">Atualizar</a> para tentar de novo.</p>`;
+  } else if (page.items.length === 0) {
+    content = html`<p class="empty" data-state="empty">Nenhum lote anterior.</p>`;
+  } else {
+    content = html`<table class="orders">
+  <thead><tr><th>Lote</th><th>Status</th><th>Criado em</th><th>Retirado em</th><th>Impresso em</th><th>Recebido em</th><th>Valor aprovado</th></tr></thead>
+  <tbody>
+  ${page.items.map(
+    (b) => html`<tr data-ttp="history-batch" data-batch-id="${b.id}">
+    <td data-label="Lote"><a href="/batches/${encodeURIComponent(b.id)}">${b.reference}</a></td>
+    <td data-label="Status"><span class="status ${b.status}">${BATCH_STATUS_LABELS[b.status]}</span></td>
+    <td data-label="Criado em">${dateTime(b.createdAt)}</td>
+    <td data-label="Retirado em">${dateTime(b.collectedAt)}</td>
+    <td data-label="Impresso em">${dateTime(b.printedAt)}</td>
+    <td data-label="Recebido em">${dateTime(b.receivedAt)}</td>
+    <td data-label="Valor aprovado">${b.approvedAmountCents === null ? '—' : formatCents(b.approvedAmountCents)}</td>
+  </tr>`,
+  )}
+  </tbody>
+</table>`;
+  }
   return layout(
-    'Pedido',
+    'Lotes anteriores',
     html`<section>
-  <p><a href="/orders">← Pedidos</a></p>
-  <h1>Pedido</h1>
-  ${banner(b)}
-  <p><a class="button" href="/orders/${encodeURIComponent(orderId)}">Consultar novamente</a></p>
+  <h1>Lotes anteriores</h1>
+  ${content}
+  <nav class="pager">
+    ${previous ? html`<a class="button secondary" href="${previous}">Anterior</a>` : html`<span class="button secondary disabled" aria-disabled="true">Anterior</span>`}
+    ${next ? html`<a class="button secondary" href="${next}">Próxima</a>` : html`<span class="button secondary disabled" aria-disabled="true">Próxima</span>`}
+  </nav>
 </section>`,
-    { csrfToken, active: 'orders' },
+    { csrfToken: view.csrfToken, active: 'history' },
   );
 }
 
@@ -431,13 +474,13 @@ function closeBanners(close: MonthlyClose): Html {
 
 function closeItems(close: MonthlyClose): Html {
   if (close.items.length === 0) {
-    return html`<p class="empty" data-state="empty">Nenhum pedido impresso nesta competência.</p>`;
+    return html`<p class="empty" data-state="empty">Nenhum lote impresso nesta competência.</p>`;
   }
   return html`<table class="orders">
   <thead><tr><th>Referência</th><th>Impresso em</th><th>Valor aprovado</th></tr></thead>
   <tbody>${close.items.map(
     (i) =>
-      html`<tr><td data-label="Referência"><a href="/orders/${encodeURIComponent(i.orderId)}">${i.reference}</a></td><td data-label="Impresso em">${dateTime(i.printedAt)}</td><td data-label="Valor aprovado">${formatCents(i.amountCents)}</td></tr>`,
+      html`<tr><td data-label="Referência">${i.kind === 'batch' ? html`<a href="/batches/${encodeURIComponent(i.batchId)}">${i.reference}</a>` : html`${i.reference} <span class="meta">(pedido individual)</span>`}</td><td data-label="Impresso em">${dateTime(i.printedAt)}</td><td data-label="Valor aprovado">${formatCents(i.amountCents)}</td></tr>`,
   )}</tbody>
   <tfoot><tr><th colspan="2">Total calculado</th><td>${formatCents(close.expectedTotalCents)}</td></tr></tfoot>
 </table>`;
@@ -469,11 +512,11 @@ function closeContent(view: InvoicesView): Html {
   if (!close) {
     return html`<p class="empty unavailable" data-state="unavailable">Não foi possível consultar o fechamento agora (serviço indisponível). Tente novamente.</p>`;
   }
-  const api = `/api/print/v1/monthly-closes/${encodeURIComponent(close.competence)}`;
+  const api = `/api/print/v2/monthly-closes/${encodeURIComponent(close.competence)}`;
   return html`${closeFacts(close)}
 ${closeBanners(close)}
 ${close.document ? fileLine(`${api}/invoice`, close.document, 'Baixar NF') : ''}
-<h2>Pedidos da competência</h2>
+<h2>Lotes e pedidos da competência</h2>
 ${closeItems(close)}
 ${invoiceForm(view, close)}`;
 }
@@ -504,7 +547,7 @@ export function invoicesPage(view: InvoicesView): Html {
 export function errorPage(title: string, b: Banner, csrfToken?: string): Html {
   return layout(
     title,
-    html`<section class="card narrow"><h1>${title}</h1>${banner(b)}<p><a href="/orders">Voltar aos pedidos</a></p></section>`,
+    html`<section class="card narrow"><h1>${title}</h1>${banner(b)}<p><a href="/">Voltar ao lote atual</a></p></section>`,
     csrfToken ? { csrfToken, active: '' } : undefined,
   );
 }

@@ -5,7 +5,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 
 const PORTAL = {
   src: [
-    /^src\/domain\/(money|monthly-close|portal-session|print-order)\.ts$/,
+    /^src\/domain\/(money|monthly-close|portal-session|print-batch|document-type)\.ts$/,
     /^src\/adapters\/(print-api|session-store|login-throttle)[.a-z-]*\.ts$/,
     /^src\/errors\/(csrf-failed|invalid-credentials|invalid-request|login-rate-limited|unauthenticated|upstream-[a-z]+)\.error\.ts$/,
     /^src\/use-cases\/(?!create-cat)[a-z-]+\.ts$/,

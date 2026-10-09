@@ -4,8 +4,8 @@
  * Boots a fake Incluir service API (real HTTP server backed by the
  * in-memory fake), wires the portal exactly like src/http/server.ts but
  * with the HTTP adapter pointed at that fake, and walks the supplier
- * journey through the portal's JSON API: login → list → download →
- * collected → quote → (staff approves) → printed → logout.
+ * batch journey through the portal's JSON API: login → open batch →
+ * download → collected → quote → (staff approves) → printed → logout.
  *
  * Usage: pnpm tsx examples/print-portal.hono.ts
  */
@@ -20,13 +20,13 @@ import { createPortalApp } from '../src/http/portal-app.js';
 import { ConsoleLogger } from '../src/observability/console-logger.js';
 import { noopTracer } from '../src/observability/tracer.js';
 import { startFakeUpstream } from '../tests/helpers/fake-print-upstream.js';
-import { PDF_BYTES, seedTwoFileOrder } from '../tests/helpers/print-fixtures.js';
+import { PDF_BYTES, seedTwoFileRequest } from '../tests/helpers/print-fixtures.js';
 
 console.log('🖨️  Frame Example: print-shop portal (Hono BFF → service API)');
 console.log('============================================================');
 
 const upstream = await startFakeUpstream();
-const order = seedTwoFileOrder(upstream.api);
+const request = seedTwoFileRequest(upstream.api);
 const password = randomBytes(18).toString('base64url');
 const observability = { logger: new ConsoleLogger(), tracer: noopTracer() };
 
@@ -87,25 +87,27 @@ try {
   expectStatus(login, 200, 'POST /api/session (login)');
   ({ csrfToken } = (await login.json()) as { csrfToken: string });
 
-  const list = await call('/api/print/v1/orders');
-  expectStatus(list, 200, 'GET /api/print/v1/orders');
+  const list = await call('/api/print/v2/batches');
+  expectStatus(list, 200, 'GET /api/print/v2/batches');
 
-  const detail = await call(`/api/print/v1/orders/${order.id}`);
-  expectStatus(detail, 200, `GET order ${order.reference}`);
-  const file = await call(`/api/print/v1/orders/${order.id}/files/${order.jobs[0]?.file.id}`);
+  const detail = await call('/api/print/v2/batches/open');
+  const batch = ((await detail.json()) as { batch: { id: string; reference: string } }).batch;
+  expectStatus(detail, 200, `GET open batch ${batch.reference}`);
+  const api = `/api/print/v2/batches/${batch.id}`;
+  const file = await call(`${api}/orders/${request.orderId}/files/${request.jobs[0]?.file.id}`);
   const digest = createHash('sha256')
     .update(Buffer.from(await file.arrayBuffer()))
     .digest('hex');
   expectStatus(
     file,
     200,
-    `download file (sha256 ${digest === order.jobs[0]?.file.sha256 ? 'matches' : 'MISMATCH'})`,
+    `download file (sha256 ${digest === request.jobs[0]?.file.sha256 ? 'matches' : 'MISMATCH'})`,
   );
 
-  const collected = await call(`/api/print/v1/orders/${order.id}/collected`, {
+  const collected = await call(`${api}/collected`, {
     method: 'POST',
     csrf: csrfToken,
-    ...json({ revision: 1 }),
+    ...json({}),
     headers: {
       'Content-Type': 'application/json',
       'If-Match': detail.headers.get('etag') ?? '',
@@ -117,24 +119,23 @@ try {
   const form = new FormData();
   form.append('file', new File([PDF_BYTES], 'orcamento.pdf'));
   form.append('amountCents', '45900');
-  form.append('orderRevision', '1');
-  const quoted = await call(`/api/print/v1/orders/${order.id}/quotes`, {
+  const quoted = await call(`${api}/quotes`, {
     method: 'POST',
     csrf: csrfToken,
     body: form,
     headers: { 'If-Match': collected.headers.get('etag') ?? '', 'Idempotency-Key': randomUUID() },
   });
   expectStatus(quoted, 201, 'POST quotes (R$ 459,00)');
-  const quoteId = ((await quoted.json()) as { order: { currentQuote: { id: string } } }).order
+  const quoteId = ((await quoted.json()) as { batch: { currentQuote: { id: string } } }).batch
     .currentQuote.id;
 
-  upstream.api.approveQuote(order.id);
+  upstream.api.approveQuote(batch.id);
   console.log('✅ Financeiro approves the quote (staff side, outside the portal)');
-  const approved = await call(`/api/print/v1/orders/${order.id}`);
-  const printed = await call(`/api/print/v1/orders/${order.id}/printed`, {
+  const approved = await call(api);
+  const printed = await call(`${api}/printed`, {
     method: 'POST',
     csrf: csrfToken,
-    body: JSON.stringify({ revision: 1, quoteId }),
+    body: JSON.stringify({ quoteId }),
     headers: {
       'Content-Type': 'application/json',
       'If-Match': approved.headers.get('etag') ?? '',
@@ -148,7 +149,7 @@ try {
     204,
     'DELETE /api/session (logout)',
   );
-  expectStatus(await call('/api/print/v1/orders'), 401, 'GET orders after logout');
+  expectStatus(await call('/api/print/v2/batches'), 401, 'GET batches after logout');
   console.log('\n🎉 Example completed successfully!');
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));

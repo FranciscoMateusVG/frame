@@ -47,6 +47,18 @@ table.orders td .button{margin:0}
 .meta,.hint{color:var(--muted);font-size:.9rem}
 .sha{font-size:.75rem;color:var(--muted);word-break:break-all}
 .action{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem;margin-top:1rem}
+.banner.warning{background:var(--info-bg);color:var(--info);border-left:4px solid var(--info);font-weight:600}
+.progress{display:flex;flex-wrap:wrap;gap:.25rem;list-style:none;padding:0;margin:1rem 0;counter-reset:step}
+.progress li{flex:1 1 8rem;padding:.4rem .6rem;border-radius:6px;background:var(--card);border:1px solid var(--line);color:var(--muted);font-size:.9rem}
+.progress li.done{background:var(--ok-bg);color:var(--ok);border-color:transparent}
+.progress li.current{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700}
+.request{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem;margin-top:1.5rem}
+.request h2{margin-top:0;overflow-wrap:anywhere}
+.cards{list-style:none;padding:0;margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(16rem,1fr));gap:1rem}
+.file-card{border:1px solid var(--line);border-radius:8px;padding:1rem;background:var(--bg);display:flex;flex-direction:column;gap:.25rem}
+.file-card p{margin:0}.file-card .button{align-self:flex-start}
+.filename{font-weight:600;overflow-wrap:anywhere}
+.general{margin-top:1rem}
 dialog.confirm{border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);max-width:min(420px,calc(100vw - 2rem))}
 dialog.confirm .actions{display:flex;gap:.5rem;flex-wrap:wrap}
 @media (max-width:640px){
@@ -55,6 +67,8 @@ dialog.confirm .actions{display:flex;gap:.5rem;flex-wrap:wrap}
  table.orders td{display:flex;justify-content:space-between;gap:1rem;border:none;padding:.25rem .5rem}
  table.orders td[data-label]::before{content:attr(data-label);color:var(--muted)}
  .facts{grid-template-columns:1fr}
+ .cards{grid-template-columns:1fr}
+ .progress li{flex-basis:100%}
 }
 `;
 

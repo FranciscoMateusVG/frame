@@ -28,7 +28,7 @@ const SMALL_BODY_MAX_BYTES = 64 * 1024;
 
 /** Upload routes carry their own 5 MiB + 512 KiB limit. */
 const UPLOAD_ROUTE =
-  /^\/(api\/print\/v1\/orders\/[^/]+\/quotes|api\/print\/v1\/monthly-closes\/[^/]+\/invoice|orders\/[^/]+\/quotes|invoices\/[^/]+)$/;
+  /^\/(api\/print\/v2\/batches\/[^/]+\/quotes|api\/print\/v2\/monthly-closes\/[^/]+\/invoice|batches\/[^/]+\/quotes|invoices\/[^/]+)$/;
 
 const smallBodyLimit = limitBody(SMALL_BODY_MAX_BYTES, tooLarge);
 

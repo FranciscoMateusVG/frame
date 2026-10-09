@@ -39,7 +39,8 @@
       "!**/node_modules",
       "!**/coverage",
       "!**/*.generated.ts",
-      "!tests/helpers/print-portal-v1*.json"
+      "!tests/helpers/print-portal-v1*.json",
+      "!tests/helpers/print-portal-v2*.json"
     ]
   }
 }

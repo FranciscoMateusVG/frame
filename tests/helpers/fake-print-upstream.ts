@@ -1,10 +1,10 @@
 /**
  * A real HTTP server speaking the Incluir service API
- * (`/api/print-portal/v1`) on an ephemeral port, backed by PrintApiMemory.
+ * (`/api/print-portal/v2`, batches) on an ephemeral port, backed by PrintApiMemory.
  *
  * Used to exercise PrintApiHttp and the whole portal across a real network
  * boundary (fetch, headers, multipart, streaming) without the Incluir
- * stack. The wire format follows PR B's routes/print-portal.ts: bearer
+ * stack. The wire format follows the frozen v2 contract: bearer
  * auth → 401 UNAUTHORIZED, `{error:{code,message,requestId}}`, ETag,
  * Idempotency-Replayed, attachment downloads, exact multipart fields.
  *
@@ -16,6 +16,7 @@ import type { AddressInfo } from 'node:net';
 import { serve } from '@hono/node-server';
 import { type Context, Hono } from 'hono';
 import { PrintApiMemory } from '../../src/adapters/print-api.memory.js';
+import { sniffDocumentMime } from '../../src/domain/document-type.js';
 import { UpstreamRejectedError } from '../../src/errors/upstream-rejected.error.js';
 
 export interface FakeUpstreamBehaviour {
@@ -85,7 +86,7 @@ export async function startFakeUpstream(
     return c.json(payload, status as 200, { 'Cache-Control': 'no-store', ...headers });
   };
 
-  const download = async (d: Awaited<ReturnType<PrintApiMemory['downloadOrderFile']>>) =>
+  const download = async (d: Awaited<ReturnType<PrintApiMemory['downloadBatchFile']>>) =>
     new Response(d.body, {
       headers: {
         'Content-Type': d.mime,
@@ -105,8 +106,8 @@ export async function startFakeUpstream(
     };
   };
 
-  const v1 = new Hono();
-  v1.use('*', async (c, next) => {
+  const v2 = new Hono();
+  v2.use('*', async (c, next) => {
     seenHeaders.push(new Headers(c.req.raw.headers));
     if (behaviour.delayMs) await new Promise((r) => setTimeout(r, behaviour.delayMs));
     if (behaviour.redirectTo) return c.redirect(behaviour.redirectTo, 302);
@@ -115,17 +116,17 @@ export async function startFakeUpstream(
       // Contract-valid but huge: only a size cap can refuse it.
       const summary = {
         id: randomUUID(),
-        reference: 'IMP-0001',
-        title: 'x'.repeat(behaviour.hugeBodyBytes),
-        revision: 1,
+        reference: 'LOT-0001',
+        status: 'open',
         version: 1,
-        status: 'ready',
+        itemCount: 0,
         createdAt: new Date().toISOString(),
         collectedAt: null,
         printedAt: null,
+        receivedAt: null,
         approvedAmountCents: null,
       };
-      return c.json({ items: [summary], nextCursor: null });
+      return c.json({ items: [summary], nextCursor: 'x'.repeat(behaviour.hugeBodyBytes) });
     }
     if (behaviour.rateLimitedFor) {
       return c.json(
@@ -145,11 +146,11 @@ export async function startFakeUpstream(
     await next();
   });
 
-  v1.get('/orders', async (c) => {
+  v2.get('/batches', async (c) => {
     try {
       const status = c.req.query('status');
       const cursor = c.req.query('cursor');
-      const page = await api.listOrders({
+      const page = await api.listBatches({
         limit: Number(c.req.query('limit') ?? 20),
         ...(status ? { status: status as never } : {}),
         ...(cursor ? { cursor } : {}),
@@ -159,22 +160,32 @@ export async function startFakeUpstream(
       return fail(c, e);
     }
   });
-  v1.get('/orders/:id', async (c) => {
+  v2.get('/batches/open', async (c) => {
+    const r = await api.getOpenBatch();
+    return json(c, { batch: r?.value ?? null }, 200, r ? { ETag: r.etag } : {});
+  });
+  v2.get('/batches/:id', async (c) => {
     try {
-      const r = await api.getOrder(c.req.param('id'));
-      return json(c, { order: r.value }, 200, { ETag: r.etag });
+      const r = await api.getBatch(c.req.param('id'));
+      return json(c, { batch: r.value }, 200, { ETag: r.etag });
     } catch (e) {
       return fail(c, e);
     }
   });
-  v1.get('/orders/:id/files/:fileId', async (c) => {
+  v2.get('/batches/:id/orders/:orderId/files/:fileId', async (c) => {
     try {
-      return await download(await api.downloadOrderFile(c.req.param('id'), c.req.param('fileId')));
+      return await download(
+        await api.downloadBatchFile(
+          c.req.param('id'),
+          c.req.param('orderId'),
+          c.req.param('fileId'),
+        ),
+      );
     } catch (e) {
       return fail(c, e);
     }
   });
-  v1.get('/orders/:id/quotes/:quoteId/file', async (c) => {
+  v2.get('/batches/:id/quotes/:quoteId/file', async (c) => {
     try {
       return await download(await api.downloadQuoteFile(c.req.param('id'), c.req.param('quoteId')));
     } catch (e) {
@@ -190,53 +201,62 @@ export async function startFakeUpstream(
       ETag: r.etag,
       ...(r.replayed ? { 'Idempotency-Replayed': 'true' } : {}),
     });
-  v1.post('/orders/:id/collected', async (c) => {
+  // As upstream: the part's declared type must be what its bytes are.
+  const declaredMatches = (file: File, bytes: Uint8Array) => {
+    if (sniffDocumentMime(bytes) !== file.type.toLowerCase()) {
+      throw new UpstreamRejectedError(
+        415,
+        'UNSUPPORTED_MEDIA_TYPE',
+        'Formato de arquivo não aceito.',
+        randomUUID(),
+      );
+    }
+  };
+  const invalid = () =>
+    new UpstreamRejectedError(400, 'INVALID_REQUEST', 'Requisição inválida.', randomUUID());
+  v2.post('/batches/:id/collected', async (c) => {
     try {
-      const body = (await c.req.json()) as { revision: number };
-      return command(await api.markCollected(c.req.param('id'), body, pre(c)), 'order', c);
+      const body = (await c.req.json()) as Record<string, unknown>;
+      if (Object.keys(body).length !== 0) throw invalid();
+      return command(await api.markCollected(c.req.param('id'), pre(c)), 'batch', c);
     } catch (e) {
       return fail(c, e);
     }
   });
-  v1.post('/orders/:id/printed', async (c) => {
+  v2.post('/batches/:id/printed', async (c) => {
     try {
-      const body = (await c.req.json()) as { revision: number; quoteId: string };
-      return command(await api.markPrinted(c.req.param('id'), body, pre(c)), 'order', c);
+      const body = (await c.req.json()) as { quoteId: string };
+      if (Object.keys(body).join(',') !== 'quoteId') throw invalid();
+      return command(await api.markPrinted(c.req.param('id'), body, pre(c)), 'batch', c);
     } catch (e) {
       return fail(c, e);
     }
   });
-  v1.post('/orders/:id/quotes', async (c) => {
+  v2.post('/batches/:id/quotes', async (c) => {
     try {
       const form = await c.req.parseBody({ all: true });
       const keys = Object.keys(form).sort().join(',');
       const file = form.file;
-      if (keys !== 'amountCents,file,orderRevision' || !(file instanceof File)) {
-        throw new UpstreamRejectedError(
-          400,
-          'INVALID_REQUEST',
-          'Requisição inválida.',
-          randomUUID(),
-        );
-      }
+      if (keys !== 'amountCents,file' || !(file instanceof File)) throw invalid();
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      declaredMatches(file, bytes);
       return command(
         await api.submitQuote(
           c.req.param('id'),
           {
             amountCents: Number(form.amountCents),
-            orderRevision: Number(form.orderRevision),
-            file: { filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) },
+            file: { filename: file.name, bytes },
           },
           pre(c),
         ),
-        'order',
+        'batch',
         c,
       );
     } catch (e) {
       return fail(c, e);
     }
   });
-  v1.get('/monthly-closes/:competence', async (c) => {
+  v2.get('/monthly-closes/:competence', async (c) => {
     try {
       const r = await api.getMonthlyClose(c.req.param('competence'));
       return json(c, { close: r.value }, 200, { ETag: r.etag });
@@ -244,7 +264,7 @@ export async function startFakeUpstream(
       return fail(c, e);
     }
   });
-  v1.post('/monthly-closes/:competence/invoice', async (c) => {
+  v2.post('/monthly-closes/:competence/invoice', async (c) => {
     try {
       const form = await c.req.parseBody({ all: true });
       const file = form.file;
@@ -252,19 +272,16 @@ export async function startFakeUpstream(
         Object.keys(form).sort().join(',') !== 'declaredTotalCents,file' ||
         !(file instanceof File)
       ) {
-        throw new UpstreamRejectedError(
-          400,
-          'INVALID_REQUEST',
-          'Requisição inválida.',
-          randomUUID(),
-        );
+        throw invalid();
       }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      declaredMatches(file, bytes);
       return command(
         await api.submitInvoice(
           c.req.param('competence'),
           {
             declaredTotalCents: Number(form.declaredTotalCents),
-            file: { filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) },
+            file: { filename: file.name, bytes },
           },
           pre(c),
         ),
@@ -275,7 +292,7 @@ export async function startFakeUpstream(
       return fail(c, e);
     }
   });
-  v1.get('/monthly-closes/:competence/invoice', async (c) => {
+  v2.get('/monthly-closes/:competence/invoice', async (c) => {
     try {
       return await download(await api.downloadInvoice(c.req.param('competence')));
     } catch (e) {
@@ -283,21 +300,22 @@ export async function startFakeUpstream(
     }
   });
   for (const path of [
-    '/orders',
-    '/orders/:id',
-    '/orders/:id/collected',
-    '/orders/:id/printed',
-    '/orders/:id/quotes',
+    '/batches',
+    '/batches/open',
+    '/batches/:id',
+    '/batches/:id/collected',
+    '/batches/:id/printed',
+    '/batches/:id/quotes',
   ]) {
-    v1.all(path, methodNotAllowed);
+    v2.all(path, methodNotAllowed);
   }
-  v1.all('*', (c) =>
+  v2.all('*', (c) =>
     c.json(
       { error: { code: 'NOT_FOUND', message: 'Recurso não encontrado.', requestId: randomUUID() } },
       404,
     ),
   );
-  app.route('/api/print-portal/v1', v1);
+  app.route('/api/print-portal/v2', v2);
 
   const server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' });
   if (!server.listening)

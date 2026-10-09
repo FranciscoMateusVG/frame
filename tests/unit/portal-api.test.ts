@@ -1,7 +1,7 @@
 /**
  * Portal JSON API (spec §4.5, §5) through the real Hono app over the
  * in-memory upstream fake: sessions, cookies, CSRF/Origin, throttling,
- * the ten /api/print/v1 routes, error mapping and downloads.
+ * the /api/print/v2 batch routes, error mapping and downloads.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -13,7 +13,7 @@ import {
   PASSWORD,
   type PortalClient,
 } from '../helpers/portal-harness.js';
-import { PDF_BYTES, PNG_BYTES, seedTwoFileOrder } from '../helpers/print-fixtures.js';
+import { PDF_BYTES, PNG_BYTES, seedTwoFileRequest } from '../helpers/print-fixtures.js';
 
 const sha = (bytes: ArrayBuffer | Uint8Array) =>
   createHash('sha256')
@@ -180,7 +180,7 @@ describe('portal API — session', () => {
   it('logout revokes immediately; repeating it without a session is a silent 204', async () => {
     await browser.login();
     const sessionId = browser.cookies.get('__Host-print_session') ?? '';
-    expect((await browser.get('/api/print/v1/orders')).status).toBe(200);
+    expect((await browser.get('/api/print/v2/batches')).status).toBe(200);
 
     const noOrigin = await browser.request('DELETE', '/api/session', {
       origin: null,
@@ -201,7 +201,7 @@ describe('portal API — session', () => {
     // The old cookie value no longer works, even if a client kept it.
     const replayer = h.client();
     replayer.cookies.set('__Host-print_session', sessionId);
-    const after = await replayer.get('/api/print/v1/orders');
+    const after = await replayer.get('/api/print/v2/batches');
     expect(after.status).toBe(401);
     expect(errorCode(await after.json())).toBe('UNAUTHENTICATED');
 
@@ -214,21 +214,21 @@ describe('portal API — session', () => {
   it('idle (30 min) and absolute (8 h) expiry end the session', async () => {
     await browser.login();
     h.clock.now = new Date(h.clock.now.getTime() + 29 * 60 * 1000);
-    expect((await browser.get('/api/print/v1/orders')).status).toBe(200);
+    expect((await browser.get('/api/print/v2/batches')).status).toBe(200);
     h.clock.now = new Date(h.clock.now.getTime() + 30 * 60 * 1000 + 1);
-    expect((await browser.get('/api/print/v1/orders')).status).toBe(401);
+    expect((await browser.get('/api/print/v2/batches')).status).toBe(401);
 
     const busy = h.client({ ip: '203.0.113.9' });
     await busy.login();
     for (let elapsed = 0; elapsed < 8 * 60; elapsed += 20) {
       h.clock.now = new Date(h.clock.now.getTime() + 20 * 60 * 1000);
-      const res = await busy.get('/api/print/v1/orders');
+      const res = await busy.get('/api/print/v2/batches');
       expect(res.status).toBe(elapsed + 20 < 8 * 60 ? 200 : 401);
     }
   });
 });
 
-describe('portal API — /api/print/v1', () => {
+describe('portal API — /api/print/v2', () => {
   let h: Harness;
   let browser: PortalClient;
   beforeEach(async () => {
@@ -237,20 +237,28 @@ describe('portal API — /api/print/v1', () => {
     await browser.login();
   });
 
+  /** Publish a request and return the open batch's id and ETag. */
+  async function openBatch() {
+    const request = seedTwoFileRequest(h.api);
+    const open = await h.api.getOpenBatch();
+    return { request, id: open?.value.id ?? '', etag: open?.etag ?? '' };
+  }
+
   it('every route requires a session (JSON 401, never a redirect)', async () => {
     const anon = h.client();
     const id = randomUUID();
     for (const [method, path] of [
-      ['GET', '/api/print/v1/orders'],
-      ['GET', `/api/print/v1/orders/${id}`],
-      ['GET', `/api/print/v1/orders/${id}/files/${id}`],
-      ['POST', `/api/print/v1/orders/${id}/collected`],
-      ['POST', `/api/print/v1/orders/${id}/quotes`],
-      ['GET', `/api/print/v1/orders/${id}/quotes/${id}/file`],
-      ['POST', `/api/print/v1/orders/${id}/printed`],
-      ['GET', '/api/print/v1/monthly-closes/2026-09'],
-      ['POST', '/api/print/v1/monthly-closes/2026-09/invoice'],
-      ['GET', '/api/print/v1/monthly-closes/2026-09/invoice'],
+      ['GET', '/api/print/v2/batches'],
+      ['GET', '/api/print/v2/batches/open'],
+      ['GET', `/api/print/v2/batches/${id}`],
+      ['GET', `/api/print/v2/batches/${id}/orders/${id}/files/${id}`],
+      ['POST', `/api/print/v2/batches/${id}/collected`],
+      ['POST', `/api/print/v2/batches/${id}/quotes`],
+      ['GET', `/api/print/v2/batches/${id}/quotes/${id}/file`],
+      ['POST', `/api/print/v2/batches/${id}/printed`],
+      ['GET', '/api/print/v2/monthly-closes/2026-09'],
+      ['POST', '/api/print/v2/monthly-closes/2026-09/invoice'],
+      ['GET', '/api/print/v2/monthly-closes/2026-09/invoice'],
     ] as const) {
       const res = await anon.request(method, path);
       expect(res.status, `${method} ${path}`).toBe(401);
@@ -259,49 +267,66 @@ describe('portal API — /api/print/v1', () => {
   });
 
   it('refuses a browser Authorization header instead of forwarding it', async () => {
-    const res = await browser.get('/api/print/v1/orders', {
+    const res = await browser.get('/api/print/v2/batches', {
       headers: { Authorization: 'Bearer stolen' },
     });
     expect(res.status).toBe(400);
   });
 
-  it('lists, filters and paginates; validates the query', async () => {
-    const orders = [seedTwoFileOrder(h.api), seedTwoFileOrder(h.api), seedTwoFileOrder(h.api)];
-    const page1 = await browser.get('/api/print/v1/orders?limit=2');
+  it('open batch relays its ETag only when there is one; lists, filters and paginates', async () => {
+    const none = await browser.get('/api/print/v2/batches/open');
+    expect(await none.json()).toEqual({ batch: null });
+    expect(none.headers.get('etag')).toBeNull();
+
+    const { id, etag } = await openBatch();
+    const open = await browser.get('/api/print/v2/batches/open');
+    expect(open.headers.get('etag')).toBe(etag);
+    expect(((await open.json()) as { batch: { id: string } }).batch.id).toBe(id);
+    await h.api.markCollected(id, { ifMatch: etag, idempotencyKey: randomUUID() });
+    h.api.cancelBatch(id, 'Cancelado');
+
+    const page1 = await browser.get('/api/print/v2/batches?limit=1');
     expect(page1.status).toBe(200);
     const body1 = (await page1.json()) as { items: { id: string }[]; nextCursor: string };
-    expect(body1.items.map((o) => o.id)).toEqual([orders[0]?.id, orders[1]?.id]);
+    expect(body1.items.map((b) => b.id)).toEqual([id]);
     const page2 = (await (
       await browser.get(
-        `/api/print/v1/orders?limit=2&cursor=${encodeURIComponent(body1.nextCursor)}`,
+        `/api/print/v2/batches?limit=1&cursor=${encodeURIComponent(body1.nextCursor)}`,
       )
-    ).json()) as { items: { id: string }[]; nextCursor: null };
-    expect(page2).toEqual({
-      items: [expect.objectContaining({ id: orders[2]?.id })],
-      nextCursor: null,
-    });
+    ).json()) as { items: { status: string }[]; nextCursor: null };
+    expect(page2.items.map((b) => b.status)).toEqual(['open']);
+    const cancelled = (await (
+      await browser.get('/api/print/v2/batches?status=cancelled')
+    ).json()) as {
+      items: { id: string }[];
+    };
+    expect(cancelled.items.map((b) => b.id)).toEqual([id]);
 
-    for (const q of ['limit=0', 'limit=101', 'limit=abc', 'status=bogus']) {
-      const res = await browser.get(`/api/print/v1/orders?${q}`);
+    for (const q of ['limit=0', 'limit=101', 'limit=abc', 'status=ready']) {
+      const res = await browser.get(`/api/print/v2/batches?${q}`);
       expect(res.status, q).toBe(400);
     }
-    const badCursor = await browser.get('/api/print/v1/orders?cursor=garbage');
+    const badCursor = await browser.get('/api/print/v2/batches?cursor=garbage');
     expect(badCursor.status).toBe(400);
     expect(errorCode(await badCursor.json())).toBe('INVALID_CURSOR');
   });
 
-  it('GET order relays ETag; downloads stream exact bytes as attachments', async () => {
-    const order = seedTwoFileOrder(h.api);
-    const res = await browser.get(`/api/print/v1/orders/${order.id}`);
-    expect(res.headers.get('etag')).toBe(`"${order.id}:1"`);
-    const { order: dto } = (await res.json()) as { order: typeof order };
-    expect(dto.jobs.map((j) => [j.title, j.copies])).toEqual([
+  it('GET batch relays ETag; member downloads stream exact bytes as attachments', async () => {
+    const { request, id } = await openBatch();
+    const res = await browser.get(`/api/print/v2/batches/${id}`);
+    expect(res.headers.get('etag')).toBe(`"${id}:1"`);
+    const { batch } = (await res.json()) as {
+      batch: { items: { jobs: { title: string; copies: number }[] }[] };
+    };
+    expect(batch.items[0]?.jobs.map((j) => [j.title, j.copies])).toEqual([
       ['Apostila de Matemática', 2],
       ['Lista de Física', 7],
     ]);
 
-    const physics = dto.jobs[1];
-    const file = await browser.get(`/api/print/v1/orders/${order.id}/files/${physics?.file.id}`);
+    const physics = request.jobs[1];
+    const file = await browser.get(
+      `/api/print/v2/batches/${id}/orders/${request.orderId}/files/${physics?.file.id}`,
+    );
     expect(file.status).toBe(200);
     expect(file.headers.get('content-type')).toBe('image/png');
     expect(file.headers.get('content-length')).toBe(String(PNG_BYTES.byteLength));
@@ -312,60 +337,53 @@ describe('portal API — /api/print/v1', () => {
     expect(file.headers.get('cache-control')).toBe('private, no-store');
     expect(sha(await file.arrayBuffer())).toBe(physics?.file.sha256);
 
-    const missing = await browser.get(`/api/print/v1/orders/${order.id}/files/${randomUUID()}`);
+    const missing = await browser.get(
+      `/api/print/v2/batches/${id}/orders/${request.orderId}/files/${randomUUID()}`,
+    );
     expect(missing.status).toBe(404);
     expect(errorCode(await missing.json())).toBe('NOT_FOUND');
   });
 
   it('commands need CSRF + Origin; relay If-Match/Idempotency-Key and replay', async () => {
-    const order = seedTwoFileOrder(h.api);
-    const etag = `"${order.id}:1"`;
-    const path = `/api/print/v1/orders/${order.id}/collected`;
+    const { id, etag } = await openBatch();
+    const path = `/api/print/v2/batches/${id}/collected`;
     const key = randomUUID();
 
     const noCsrf = await browser.request('POST', path, {
-      json: { revision: 1 },
+      json: {},
       headers: { 'If-Match': etag, 'Idempotency-Key': key },
     });
     expect(noCsrf.status).toBe(403);
     expect(errorCode(await noCsrf.json())).toBe('CSRF_FAILED');
     const noOrigin = await browser.request('POST', path, {
-      json: { revision: 1 },
+      json: {},
       origin: null,
       headers: { 'X-CSRF-Token': browser.csrf ?? '', 'If-Match': etag, 'Idempotency-Key': key },
     });
     expect(noOrigin.status).toBe(403);
 
-    const missing = await browser.post(path, { revision: 1 });
+    const missing = await browser.post(path, {});
     expect(missing.status).toBe(428);
     expect(errorCode(await missing.json())).toBe('PRECONDITION_REQUIRED');
 
-    for (const body of [{}, { revision: '1' }, { revision: 1, extra: 1 }, [1]]) {
+    for (const body of [{ revision: 1 }, [1], 'x']) {
       expect(
         (await browser.post(path, body, { 'If-Match': etag, 'Idempotency-Key': key })).status,
       ).toBe(400);
     }
 
-    const ok = await browser.post(
-      path,
-      { revision: 1 },
-      { 'If-Match': etag, 'Idempotency-Key': key },
-    );
+    const ok = await browser.post(path, {}, { 'If-Match': etag, 'Idempotency-Key': key });
     expect(ok.status).toBe(200);
-    expect(ok.headers.get('etag')).toBe(`"${order.id}:2"`);
+    expect(ok.headers.get('etag')).toBe(`"${id}:2"`);
     expect(ok.headers.get('idempotency-replayed')).toBeNull();
-    const replay = await browser.post(
-      path,
-      { revision: 1 },
-      { 'If-Match': etag, 'Idempotency-Key': key },
-    );
+    const replay = await browser.post(path, {}, { 'If-Match': etag, 'Idempotency-Key': key });
     expect(replay.status).toBe(200);
     expect(replay.headers.get('idempotency-replayed')).toBe('true');
     expect(await replay.json()).toEqual(await ok.json());
 
     const stale = await browser.post(
       path,
-      { revision: 1 },
+      {},
       { 'If-Match': etag, 'Idempotency-Key': randomUUID() },
     );
     expect(stale.status).toBe(412);
@@ -373,14 +391,14 @@ describe('portal API — /api/print/v1', () => {
   });
 
   it('quote upload: multipart validation, 413 cap, 201 + quote download; printed after approval', async () => {
-    const order = seedTwoFileOrder(h.api);
+    const { id, etag: openEtag } = await openBatch();
     const collected = await browser.post(
-      `/api/print/v1/orders/${order.id}/collected`,
-      { revision: 1 },
-      { 'If-Match': `"${order.id}:1"`, 'Idempotency-Key': randomUUID() },
+      `/api/print/v2/batches/${id}/collected`,
+      {},
+      { 'If-Match': openEtag, 'Idempotency-Key': randomUUID() },
     );
     const etag = collected.headers.get('etag') ?? '';
-    const quotePath = `/api/print/v1/orders/${order.id}/quotes`;
+    const quotePath = `/api/print/v2/batches/${id}/quotes`;
     const send = (fields: Record<string, string | Blob>, headers: Record<string, string> = {}) => {
       const form = new FormData();
       for (const [k, v] of Object.entries(fields)) form.append(k, v);
@@ -396,17 +414,14 @@ describe('portal API — /api/print/v1', () => {
     };
     const pdf = new File([PDF_BYTES], 'orçamento.pdf', { type: 'application/pdf' });
 
-    expect((await send({ amountCents: '100', orderRevision: '1' })).status).toBe(400);
-    expect((await send({ file: pdf, amountCents: '1,00', orderRevision: '1' })).status).toBe(400);
-    expect((await send({ file: pdf, amountCents: '0', orderRevision: '1' })).status).toBe(400);
-    expect(
-      (await send({ file: pdf, amountCents: '100', orderRevision: '1', extra: 'x' })).status,
-    ).toBe(400);
+    expect((await send({ amountCents: '100' })).status).toBe(400);
+    expect((await send({ file: pdf, amountCents: '1,00' })).status).toBe(400);
+    expect((await send({ file: pdf, amountCents: '0' })).status).toBe(400);
+    expect((await send({ file: pdf, amountCents: '100', orderRevision: '1' })).status).toBe(400);
     const repeated = new FormData();
     repeated.append('file', pdf);
     repeated.append('amountCents', '100');
     repeated.append('amountCents', '200');
-    repeated.append('orderRevision', '1');
     expect(
       (
         await browser.request('POST', quotePath, {
@@ -419,94 +434,98 @@ describe('portal API — /api/print/v1', () => {
         })
       ).status,
     ).toBe(400);
-    expect(
-      (await send({ file: new File([], 'empty.pdf'), amountCents: '100', orderRevision: '1' }))
-        .status,
-    ).toBe(400);
+    expect((await send({ file: new File([], 'empty.pdf'), amountCents: '100' })).status).toBe(400);
 
     const big = new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'big.pdf');
-    const tooBig = await send({ file: big, amountCents: '100', orderRevision: '1' });
+    const tooBig = await send({ file: big, amountCents: '100' });
     expect(tooBig.status).toBe(413);
     expect(errorCode(await tooBig.json())).toBe('FILE_TOO_LARGE');
     const huge = await send({
       file: new File([new Uint8Array(6 * 1024 * 1024)], 'huge.pdf'),
       amountCents: '1',
-      orderRevision: '1',
     });
     expect(huge.status).toBe(413);
 
-    const html = await send({
-      file: new File(['<html>'], 'x.pdf'),
-      amountCents: '100',
-      orderRevision: '1',
-    });
+    const html = await send({ file: new File(['<html>'], 'x.pdf'), amountCents: '100' });
     expect(html.status).toBe(415);
 
-    const created = await send({ file: pdf, amountCents: '45900', orderRevision: '1' });
+    const created = await send({ file: pdf, amountCents: '45900' });
     expect(created.status).toBe(201);
-    const { order: quoted } = (await created.json()) as {
-      order: { status: string; currentQuote: { id: string } };
+    const { batch: quoted } = (await created.json()) as {
+      batch: { status: string; currentQuote: { id: string } };
     };
     expect(quoted.status).toBe('quote_pending');
     const doc = await browser.get(
-      `/api/print/v1/orders/${order.id}/quotes/${quoted.currentQuote.id}/file`,
+      `/api/print/v2/batches/${id}/quotes/${quoted.currentQuote.id}/file`,
     );
     expect(sha(await doc.arrayBuffer())).toBe(sha(PDF_BYTES));
 
-    h.api.approveQuote(order.id);
-    const approved = await browser.get(`/api/print/v1/orders/${order.id}`);
+    h.api.approveQuote(id);
+    const approved = await browser.get(`/api/print/v2/batches/${id}`);
+    const printedPath = `/api/print/v2/batches/${id}/printed`;
+    const ifMatch = approved.headers.get('etag') ?? '';
+    for (const body of [{}, { quoteId: 'x' }, { quoteId: quoted.currentQuote.id, revision: 1 }]) {
+      expect(
+        (
+          await browser.post(printedPath, body, {
+            'If-Match': ifMatch,
+            'Idempotency-Key': randomUUID(),
+          })
+        ).status,
+      ).toBe(400);
+    }
     const printed = await browser.post(
-      `/api/print/v1/orders/${order.id}/printed`,
-      { revision: 1, quoteId: quoted.currentQuote.id },
-      { 'If-Match': approved.headers.get('etag') ?? '', 'Idempotency-Key': randomUUID() },
+      printedPath,
+      { quoteId: quoted.currentQuote.id },
+      { 'If-Match': ifMatch, 'Idempotency-Key': randomUUID() },
     );
     expect(printed.status).toBe(200);
-    expect(((await printed.json()) as { order: { status: string } }).order.status).toBe('printed');
+    expect(((await printed.json()) as { batch: { status: string } }).batch.status).toBe('printed');
   });
 
-  it('monthly closes: competence validation, virtual close, invoice submit and download', async () => {
-    const bad = await browser.get('/api/print/v1/monthly-closes/2026-13');
+  it('monthly closes: competence validation, batch + legacy charges, invoice submit and download', async () => {
+    const bad = await browser.get('/api/print/v2/monthly-closes/2026-13');
     expect(bad.status).toBe(400);
     expect(errorCode(await bad.json())).toBe('INVALID_COMPETENCE');
 
-    // Print an order in September (clock), then read October.
+    // Print a batch in September (clock), then read in October.
     h.clock.now = new Date('2026-09-15T15:00:00.000Z');
-    const order = seedTwoFileOrder(h.api);
-    let etag = `"${order.id}:1"`;
-    etag = (
-      await h.api.markCollected(
-        order.id,
-        { revision: 1 },
-        { ifMatch: etag, idempotencyKey: randomUUID() },
-      )
+    const { id, etag: openEtag } = await openBatch();
+    const etag = (
+      await h.api.markCollected(id, { ifMatch: openEtag, idempotencyKey: randomUUID() })
     ).etag;
     const q = await h.api.submitQuote(
-      order.id,
-      { amountCents: 57_900, orderRevision: 1, file: { filename: 'q.pdf', bytes: PDF_BYTES } },
+      id,
+      { amountCents: 56_900, file: { filename: 'q.pdf', bytes: PDF_BYTES } },
       { ifMatch: etag, idempotencyKey: randomUUID() },
     );
-    const approved = h.api.approveQuote(order.id);
+    const approved = h.api.approveQuote(id);
     await h.api.markPrinted(
-      order.id,
-      { revision: 1, quoteId: q.value.currentQuote?.id ?? '' },
-      { ifMatch: `"${order.id}:${approved.version}"`, idempotencyKey: randomUUID() },
+      id,
+      { quoteId: q.value.currentQuote?.id ?? '' },
+      { ifMatch: `"${id}:${approved.version}"`, idempotencyKey: randomUUID() },
     );
+    h.api.seedLegacyCharge({
+      reference: 'IMP-0301',
+      amountCents: 1_000,
+      printedAt: '2026-09-10T12:00:00.000Z',
+    });
     h.clock.now = new Date('2026-10-08T12:00:00.000Z');
 
-    const closeRes = await browser.get('/api/print/v1/monthly-closes/2026-09');
+    const closeRes = await browser.get('/api/print/v2/monthly-closes/2026-09');
     expect(closeRes.status).toBe(200);
     const { close } = (await closeRes.json()) as {
-      close: { periodClosed: boolean; expectedTotalCents: number; items: unknown[] };
+      close: { periodClosed: boolean; expectedTotalCents: number; items: { kind: string }[] };
     };
     expect(close).toMatchObject({ periodClosed: true, expectedTotalCents: 57_900 });
-    expect(close.items).toHaveLength(1);
+    expect(close.items.map((i) => i.kind)).toEqual(['batch', 'legacy_order']);
 
     const form = new FormData();
     form.append('file', new File([PDF_BYTES], 'nf.pdf'));
     form.append('declaredTotalCents', '57900');
     const submitted = await browser.request(
       'POST',
-      '/api/print/v1/monthly-closes/2026-09/invoice',
+      '/api/print/v2/monthly-closes/2026-09/invoice',
       {
         body: form,
         headers: {
@@ -521,21 +540,21 @@ describe('portal API — /api/print/v1', () => {
       'submitted',
     );
 
-    const nf = await browser.get('/api/print/v1/monthly-closes/2026-09/invoice');
+    const nf = await browser.get('/api/print/v2/monthly-closes/2026-09/invoice');
     expect(nf.status).toBe(200);
     expect(sha(await nf.arrayBuffer())).toBe(sha(PDF_BYTES));
   });
 
-  it('405 for unlisted methods on known routes, 404 elsewhere', async () => {
+  it('405 for unlisted methods on known routes, 404 elsewhere (old v1 routes included)', async () => {
     const id = randomUUID();
-    const del = await browser.request('DELETE', `/api/print/v1/orders/${id}`, {
+    const del = await browser.request('DELETE', `/api/print/v2/batches/${id}`, {
       headers: { 'X-CSRF-Token': browser.csrf ?? '' },
     });
     expect(del.status).toBe(405);
     expect(errorCode(await del.json())).toBe('METHOD_NOT_ALLOWED');
-    const nowhere = await browser.get('/api/print/v1/admin');
-    expect(nowhere.status).toBe(404);
-    expect((await browser.get('/api/print-portal/v1/orders')).status).toBe(404);
+    expect((await browser.get('/api/print/v2/admin')).status).toBe(404);
+    expect((await browser.get('/api/print/v1/orders')).status).toBe(404);
+    expect((await browser.get('/api/print-portal/v2/batches')).status).toBe(404);
   });
 
   it('upstream unavailability is 503 UPSTREAM_UNAVAILABLE and keeps the session', async () => {
@@ -547,9 +566,11 @@ describe('portal API — /api/print/v1', () => {
     const hd = createHarness({ printApi: down });
     const b = hd.client();
     await b.login();
-    const res = await b.get('/api/print/v1/orders');
-    expect(res.status).toBe(503);
-    expect(errorCode(await res.json())).toBe('UPSTREAM_UNAVAILABLE');
+    for (const path of ['/api/print/v2/batches', '/api/print/v2/batches/open']) {
+      const res = await b.get(path);
+      expect(res.status).toBe(503);
+      expect(errorCode(await res.json())).toBe('UPSTREAM_UNAVAILABLE');
+    }
     expect((await (await b.get('/api/session')).json()) as object).toMatchObject({
       authenticated: true,
     });
