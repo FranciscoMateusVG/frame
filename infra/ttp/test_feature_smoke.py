@@ -1,16 +1,28 @@
 """Actual loopback HTTP session/download boundaries, synthetic frozen PDFs only."""
 import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 import json
 from pathlib import Path
 import threading
+import subprocess
+import sys
 import unittest
 import urllib.error
 
 import staging
+from feature_smoke import SmokeFailure, failure_reason
 
 FIXTURES = Path(__file__).with_name('smoke-fixtures')
 FIXTURE = json.loads((FIXTURES / 'print-portal-v2.fixture.json').read_text())
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind calls getfqdn even for 127.0.0.1. Bind the real
+        # socket directly; loopback tests never need a reverse-DNS hostname.
+        TCPServer.server_bind(self)
+        self.server_name = '127.0.0.1'
+        self.server_port = self.server_address[1]
+
 SHA = 'a' * 40
 V1_ID = '6b8337b0-4dbc-4c1f-8644-9691aa494c21'
 
@@ -107,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
 
 class FeatureSmokeTests(unittest.TestCase):
     def setUp(self):
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.server = LoopbackServer(('127.0.0.1', 0), Handler)
         self.server.origin = 'http://127.0.0.1:' + str(self.server.server_port)
         self.server.page = page(FIXTURE['batches'][0])
         self.server.logout = False
@@ -115,7 +127,7 @@ class FeatureSmokeTests(unittest.TestCase):
         self.server.mime = 'application/pdf'
         self.server.redirect = None
         self.server.paths = []
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self.thread.start()
         self.result = {}
 
@@ -142,7 +154,7 @@ class FeatureSmokeTests(unittest.TestCase):
 
     def test_baseline_fails_and_logs_out(self):
         self.server.page = '<h1>Orders</h1>'
-        with self.assertRaises(AssertionError): self.run_smoke(config())
+        with self.assertRaises(SmokeFailure): self.run_smoke(config())
         self.assertTrue(self.server.logout)
         self.assertEqual(self.result['checkpoint'], 'feature_v2_html')
 
@@ -150,12 +162,12 @@ class FeatureSmokeTests(unittest.TestCase):
         for suffix in (b'wrong', b'x' * (1024 * 1024)):
             with self.subTest(size=len(suffix)):
                 self.server.suffix = suffix
-                with self.assertRaises(AssertionError): self.run_smoke(config())
+                with self.assertRaises(SmokeFailure): self.run_smoke(config())
                 self.assertTrue(self.server.logout)
 
     def test_wrong_mime(self):
         self.server.mime = 'text/html'
-        with self.assertRaises(AssertionError): self.run_smoke(config())
+        with self.assertRaises(SmokeFailure): self.run_smoke(config())
         self.assertTrue(self.server.logout)
 
     def test_redirect_is_not_followed(self):
@@ -167,7 +179,7 @@ class FeatureSmokeTests(unittest.TestCase):
 
     def test_cross_origin_is_rejected_before_request(self):
         self.server.page = self.server.page.replace('href="/files/', 'href="https://example.invalid/files/')
-        with self.assertRaises(AssertionError): self.run_smoke(config())
+        with self.assertRaises(SmokeFailure): self.run_smoke(config())
         self.assertFalse(any(p.startswith('/files/') for p in self.server.paths))
         self.assertTrue(self.server.logout)
 
@@ -183,7 +195,7 @@ class FeatureSmokeTests(unittest.TestCase):
         for value in variants:
             with self.subTest(case=variants.index(value)):
                 self.server.page = value
-                with self.assertRaises(AssertionError): self.run_smoke(config())
+                with self.assertRaises(SmokeFailure): self.run_smoke(config())
                 self.assertTrue(self.server.logout)
 
     def test_every_state_action(self):
@@ -210,7 +222,7 @@ class FeatureSmokeTests(unittest.TestCase):
         # Keep metadata/card correct but serve another real PDF of the same size.
         self.server.page = self.server.page.replace('/files/00000000-0000-4000-8000-00000000000b',
                                                    '/files/00000000-0000-4000-8000-00000000000c')
-        with self.assertRaisesRegex(AssertionError, 'download_hash'): self.run_smoke(config())
+        with self.assertRaisesRegex(SmokeFailure, 'download_hash'): self.run_smoke(config())
         self.assertTrue(self.server.logout)
 
     def test_config_parse_and_fixture_provenance(self):
@@ -218,16 +230,69 @@ class FeatureSmokeTests(unittest.TestCase):
         self.assertEqual(parse_config(None), {'mode': 'v1'})
         self.assertEqual(parse_config(''), {'mode': 'v1'})
         self.assertEqual(parse_config(json.dumps(config())), config())
-        with self.assertRaises(AssertionError): parse_config('{"mode":"v1","mode":"v1"}')
-        with self.assertRaises(AssertionError): parse_config('x' * 4097)
+        with self.assertRaises(SmokeFailure): parse_config('{"mode":"v1","mode":"v1"}')
+        with self.assertRaises(SmokeFailure): parse_config('x' * 4097)
         self.assertEqual(expectation(config())['id'], FIXTURE['batches'][0]['id'])
+
+    def test_hidden_and_non_button_actions_fail(self):
+        original = self.server.page
+        button = '<button data-ttp="action" data-action="collect">Retirei os arquivos</button>'
+        for type_ in ['hidden', 'HIDDEN', 'text', 'checkbox', 'reset']:
+            with self.subTest(type=type_):
+                self.server.page = original.replace(button,
+                    f'<input type="{type_}" data-ttp="action" data-action="collect" value="Retirei os arquivos">')
+                with self.assertRaises(SmokeFailure): self.run_smoke(config())
+                self.assertTrue(self.server.logout)
+        self.server.page = original.replace('<button ', '<button type="reset" ')
+        with self.assertRaises(SmokeFailure): self.run_smoke(config())
+        self.server.page = original.replace(button,
+            '<form data-ttp="action" data-action="collect">Retirei os arquivos</form>')
+        with self.assertRaises(SmokeFailure): self.run_smoke(config())
+
+    def test_submit_and_button_inputs_are_valid(self):
+        original = self.server.page
+        for type_ in ['submit', 'button']:
+            self.server.page = original.replace(
+                '<button data-ttp="action" data-action="collect">Retirei os arquivos</button>',
+                f'<input type="{type_}" data-ttp="action" data-action="collect" value="Retirei os arquivos">')
+            self.run_smoke(config())
+
+    def test_static_failure_reason_is_saved(self):
+        self.server.page = '<h1>Orders</h1>'
+        with self.assertRaises(SmokeFailure): self.run_smoke(config())
+        self.assertEqual(self.result.get('failure_reason'), 'marker_batch')
+        self.server.page = page(FIXTURE['batches'][0]).replace('data-ttp="batch-reference"', 'data-ttp="absent-reference"')
+        with self.assertRaises(SmokeFailure): self.run_smoke(config())
+        self.assertEqual(self.result.get('failure_reason'), 'marker_batch-reference')
+        self.assertEqual(failure_reason(ValueError('a_secret_value')), 'unexpected_error')
+        error = urllib.error.HTTPError('https://x/?secret', 302, 'secret', {}, None)
+        self.assertEqual(failure_reason(error), 'http_status_302')
+        error.close()
+
+    def test_validation_survives_python_optimized(self):
+        script = "from feature_smoke import validate_config; validate_config({'mode':'invalid'})"
+        p = subprocess.run([sys.executable, '-O', '-c', script], cwd=Path(__file__).parent,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(p.returncode, 0)
+
+    def test_loopback_server_does_not_resolve_dns(self):
+        events = []
+        active = [True]
+        sys.addaudithook(lambda event, args: events.append(event)
+                        if active[0] and event in ('socket.gethostbyaddr', 'socket.getaddrinfo') else None)
+        try:
+            server = LoopbackServer(('127.0.0.1', 0), Handler)
+            server.server_close()
+        finally:
+            active[0] = False
+        self.assertEqual(events, [])
 
     def test_invalid_config_is_fail_closed_before_login(self):
         for bad in ({'mode': 'typo'}, {**config(), 'generation': True},
                     {**config(), 'fake_sha': '0' * 40}, {**config(), 'extra': 'no'},
                     {**config(), 'checkpoint': 'empty'}):
             with self.subTest(config=bad):
-                with self.assertRaises((AssertionError, ValueError)): self.run_smoke(bad)
+                with self.assertRaises(ValueError): self.run_smoke(bad)
                 self.assertFalse(self.server.logout)
                 self.assertEqual(self.server.paths, [])
 
