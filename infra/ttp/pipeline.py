@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.request
 from timing import breakdown
+from feature_smoke import parse_config, validate_config
 
 STAGES = ["install", "lint-format", "typecheck-compile", "tests", "image-build",
           "staging-deploy", "staging-smoke"]
@@ -122,7 +123,11 @@ def init():
     fake_sha = os.environ.get("TTP_FAKE_SHA", "")
     if os.environ["GITHUB_EVENT_NAME"] == "push":
         assert re.fullmatch(r"[0-9a-f]{40}", fake_sha), "frozen upstream revision required"
-    save("context", {"schema_version": 1,
+    smoke_config = parse_config(os.environ.get("TTP_SMOKE_CONFIG"))
+    if smoke_config["mode"] == "task1-v2":
+        assert smoke_config["fake_sha"] == fake_sha, "smoke_fake_revision_mismatch"
+    save("context", {"schema_version": 1, "smoke_config": smoke_config,
+         "smoke_config_sha256": hashlib.sha256(json.dumps(smoke_config, sort_keys=True).encode()).hexdigest(),
          "fake_upstream": {"source_sha": fake_sha or None,
              "fixture_sha256": "9d1ab88ca294c4a446cce579e21a538e6a78f430b45770a71022c0a344093f6d",
              "delay_ms": 0, "provenance": "pinned staging configuration; administrative readback at acceptance"}, "variant": kind, "source_sha": sha,
@@ -193,6 +198,10 @@ def resume():
     assert ctx["run_id"] == os.environ["GITHUB_RUN_ID"]
     assert ctx["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"]
     assert ctx["variant"] == variant()
+    validate_config(ctx["smoke_config"])
+    assert ctx["smoke_config_sha256"] == hashlib.sha256(json.dumps(ctx["smoke_config"], sort_keys=True).encode()).hexdigest()
+    if ctx["smoke_config"]["mode"] == "task1-v2":
+        assert ctx["smoke_config"]["fake_sha"] == ctx["fake_upstream"]["source_sha"]
     assert all(load(s)["status"] == "success" for s in STAGES[:4])
     save("checks-report", load("ttp-timings"))
 
