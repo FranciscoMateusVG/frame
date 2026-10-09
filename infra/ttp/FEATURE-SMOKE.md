@@ -38,6 +38,19 @@ the selector plus its canonical JSON hash in the checks artifact. Deploy resumes
 that snapshot, validates its hash, and never rereads the selector variable. A change
 mid-run affects future runs only. No `workflow_dispatch` or OIDC permission change.
 Unknown keys/modes/checkpoints, wrong pins, duplicate keys and oversized config fail.
+All pipeline/smoke guards use explicit exceptions, including under `python -O`.
+Artifacts save a bounded internal `failure_reason` (e.g. `marker_batch`,
+`download_hash`, `http_status_302`), never raw exception messages or response bodies.
+
+**GO is a coordinated two-variable change with trial admission stopped:**
+set `TTP_FAKE_SHA=74e677c764a0dc11d3ec6ce61e62f10df417a2c2` AND the approved
+`TTP_SMOKE_CONFIG`, read back both, then admit the trial. These repo writes are not
+atomic: do not start runs between them. Archive the exact selector and its canonical
+hash (`sha256(json.dumps(config, sort_keys=True).encode())`). At acceptance, compare
+**each final artifact's `smoke_config_sha256` against that independent archive**,
+not just the artifact's self-consistency check. All arms in the trial block must
+match the same archived hash. A mismatch invalidates the trial. This task does not
+perform GO or change either variable.
 
 Allowed checkpoints (expected HTML snapshot, **not** an admin reset command):
 
@@ -86,7 +99,7 @@ HTML must be balanced; whitespace in text assertions is normalized.
 | copies | Inside job file, decimal copies text; absent for residual files (do not invent copies) |
 | instructions | Inside job file, exact instructions (empty marker if absent); absent for residual files |
 | download | One `<a>` per file, text `Baixar arquivo`, real session-authenticated same-origin href |
-| action | One button/form/input, `data-action` per state below, real visible action label |
+| action | One `<button type="button|submit">` (default submit) or `<input type="button|submit">`, `data-action` per state below, real visible action label |
 | status-message | Waiting text in pending/printed states, no action marker |
 | empty | When no current batch: `Nenhum pedido aguardando`; no batch/item/file/action markers |
 
@@ -97,7 +110,7 @@ printed → `Aguardando recebimento`. Inapplicable actions must not be rendered.
 A collect button may be disabled until confirmation; interaction is tested separately.
 No selector dictates classes, framework, layout or BFF URL paths.
 
-Hidden/aria-hidden/inline display:none or visibility:hidden/template/script/style
+Hidden inputs (including `type="hidden"`), non-button inputs, forms used as action markers, and hidden/aria-hidden/inline display:none or visibility:hidden/template/script/style
 ancestors fail. External stylesheets and browser layout are not evaluated. Downloads
 use the login cookie with no redirects/proxy, exact same origin (no userinfo or
 fragment), expected MIME, a byte cap, exact length and SHA256. Neither cookies,
@@ -114,3 +127,7 @@ Before review: default mode passes all three actual staging portals; enabled mod
 fails cleanly against the unimplemented baselines and still logs out. This is a
 negative feature detector acceptance, **not** a live v2 UI acceptance. No live
 variable is changed until GO, and no production service or release ref is touched.
+
+Loopback self-tests bind the real socket on 127.0.0.1 without reverse DNS,
+with a 10 ms shutdown poll. A Python audit-hook regression proves server startup
+issues no gethostbyaddr/getaddrinfo calls; sockets/sessions/downloads remain real.
