@@ -1,12 +1,16 @@
-// TTP-only container entrypoint. Reuses the real HTTP test adapter, never Hono.
-// The shared service is deliberately read-only so one trial cannot alter another.
+// TTP-only container entrypoint. V1 stays frozen read-only; V2 has an exclusive trial lease.
 import { createHash } from 'node:crypto';
 import { createServer, request } from 'node:http';
+import { getRequestListener } from '@hono/node-server';
 import { PrintApiMemory } from '../../src/adapters/print-api.memory.js';
 import { UpstreamRejectedError } from '../../src/errors/upstream-rejected.error.js';
 import { startFakeUpstream } from '../../tests/helpers/fake-print-upstream.js';
 import fixtures from '../../tests/helpers/print-portal-v1.fixture.json';
-import { startTrialAdmin, TrialControl } from './trial-control.js';
+import { createBatchApp } from './batch-http.js';
+import { seedFactory } from './batch-runtime.js';
+import { BatchError } from './batch-state.js';
+import { loadFreeze } from './contract-freeze.js';
+import { ControlError, startTrialAdmin, TrialControl } from './trial-control.js';
 
 const token = process.env.INCLUIR_PRINT_SERVICE_TOKEN;
 if (!token || token.length < 32) throw new Error('Synthetic upstream token required');
@@ -36,9 +40,36 @@ class FrozenReadApi extends PrintApiMemory {
   }
 }
 
-// Deliberately fail closed until the NEW contract/asset freeze is approved.
-const trialControl = new TrialControl();
-const admin = startTrialAdmin(trialControl);
+const freeze = loadFreeze();
+const trialControl = new TrialControl(seedFactory(freeze));
+const batchApp = createBatchApp({ control: trialControl, token });
+const batchListener = getRequestListener(batchApp.fetch, {
+  errorHandler: () =>
+    new Response(
+      JSON.stringify({
+        error: { code: 'INVALID_REQUEST', message: 'Requisição inválida', requestId: 'ttp' },
+      }),
+      { status: 400, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
+    ),
+});
+const admin = startTrialAdmin(trialControl, 4002, {
+  manifest: () => ({
+    ...freeze.manifest,
+    bundle_sha256: freeze.bundleHash,
+    v1_fixture_sha256: fixtureHash,
+    ...trialControl.status(),
+    checkpoints: trialControl.status().generation ? [...trialControl.current().checkpoints] : [],
+  }),
+  checkpoint: (state, event) => {
+    try {
+      return state.checkpoint(event);
+    } catch (error) {
+      if (error instanceof BatchError)
+        throw new ControlError(error.status, error.status < 500 ? error.code : 'CONTROL_INTERNAL');
+      throw error;
+    }
+  },
+});
 const upstream = await startFakeUpstream({ token, api: new FrozenReadApi() });
 upstream.behaviour.delayMs = 0;
 // Production-like staging has no reason to retain authorization headers at all.
@@ -46,23 +77,28 @@ upstream.seenHeaders.push = () => 0;
 const target = new URL(upstream.origin);
 const server = createServer((incoming, outgoing) => {
   outgoing.setHeader('Cache-Control', 'no-store');
-  outgoing.setHeader('X-TTP-Fixture-SHA256', fixtureHash);
+  const v2 =
+    incoming.url === '/api/print-portal/v2' || incoming.url?.startsWith('/api/print-portal/v2/');
+  outgoing.setHeader('X-TTP-Fixture-SHA256', v2 ? freeze.bundleHash : fixtureHash);
+  outgoing.setHeader('X-TTP-V2-Fixture-SHA256', freeze.bundleHash);
+  outgoing.setHeader('X-TTP-Boot-ID', trialControl.boot_id);
+  outgoing.setHeader('X-TTP-Generation', String(trialControl.status().generation));
   if (incoming.method === 'GET' && incoming.url === '/healthz') {
     outgoing.setHeader('Content-Type', 'application/json');
-    outgoing.end(JSON.stringify({ status: 'ok', fixtureHash, orders: 1, delayMs: 0 }));
-    return;
-  }
-  if (incoming.url?.startsWith('/api/print-portal/v2')) {
-    outgoing.writeHead(503, { 'Content-Type': 'application/json' });
     outgoing.end(
       JSON.stringify({
-        error: {
-          code: 'NOT_CONFIGURED',
-          message: 'Fixture freeze pending',
-          requestId: 'ttp-scaffold',
-        },
+        status: 'ok',
+        fixtureHash,
+        v2BundleHash: freeze.bundleHash,
+        sourceSha: freeze.manifest.source_sha,
+        orders: 1,
+        delayMs: 0,
       }),
     );
+    return;
+  }
+  if (v2) {
+    void batchListener(incoming, outgoing);
     return;
   }
   if (incoming.method !== 'GET') {
@@ -94,6 +130,9 @@ const server = createServer((incoming, outgoing) => {
   hop.end();
 });
 
+server.requestTimeout = 15000;
+server.headersTimeout = 10000;
+server.maxConnections = 64;
 server.listen(4001, '0.0.0.0', () => {
   console.log(JSON.stringify({ event: 'ttp_fake_ready', port: 4001, fixtureHash, delayMs: 0 }));
 });

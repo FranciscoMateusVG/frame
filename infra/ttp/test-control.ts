@@ -6,7 +6,10 @@ import { startTrialAdmin, TrialControl } from './trial-control.js';
 test('real loopback HTTP fences reset, activation and in-flight teardown', async () => {
   // Pure lifecycle seed; intentionally not a v2 fixture or batch scenario.
   const control = new TrialControl(() => ({ state: { count: 0 }, seed_sha256: 'a'.repeat(64) }));
-  const server = startTrialAdmin(control, 0);
+  const server = startTrialAdmin(control, 0, {
+    manifest: () => ({ kind: 'test' }),
+    checkpoint: (_state, event) => ({ event }),
+  });
   await once(server, 'listening');
   const addr = server.address();
   assert.ok(addr && typeof addr === 'object');
@@ -23,6 +26,8 @@ test('real loopback HTTP fences reset, activation and in-flight teardown', async
   try {
     let stamp = { boot_id: control.boot_id, generation: 0, trial_id: 'test-1' };
     assert.equal((await request('/unknown')).status, 404);
+    assert.deepEqual((await request('/manifest')).data, { kind: 'test' });
+    assert.equal((await request('/checkpoint', { ...stamp, event: 'test' })).status, 409);
     assert.equal((await request('/reset')).status, 405);
     assert.equal((await request('/status', undefined, { Origin: origin })).status, 403);
     assert.equal((await request('/reset', { padding: 'x'.repeat(5000) })).status, 413);
@@ -53,9 +58,32 @@ test('real loopback HTTP fences reset, activation and in-flight teardown', async
       state.count += 1;
     });
     assert.equal((await request('/finish', stamp)).status, 409);
+    assert.equal((await request('/checkpoint', { ...stamp, event: 'test' })).status, 409);
+    let releaseSecond: () => void = () => {};
+    const second = control.command(
+      async () =>
+        new Promise<void>((resolve) => {
+          releaseSecond = resolve;
+        }),
+    );
+    await assert.rejects(
+      control.command(async () => {}),
+      /COMMAND_CAPACITY/,
+    );
+    releaseSecond();
+    await second;
     release();
     await pending;
     assert.equal(control.current().count, 1);
+    assert.equal((await request('/checkpoint', { ...stamp, event: 'test' })).status, 200);
+    assert.equal(
+      (await request('/checkpoint', { ...stamp, event: 'test', extra: true })).status,
+      400,
+    );
+    assert.equal(
+      (await request('/checkpoint', { ...stamp, boot_id: 'previous', event: 'test' })).status,
+      409,
+    );
     assert.equal((await request('/finish', stamp)).status, 200);
     assert.equal(
       (await request('/reset', { ...stamp, trial_id: 'test-2', scenario: 'lifecycle' })).status,

@@ -56,7 +56,7 @@ class FakeBoundaryTest(unittest.TestCase):
             with opener.open("http://127.0.0.1:4002/status", timeout=3) as response:
                 control = json.load(response)
                 self.assertEqual(control["phase"], "idle")
-                self.assertFalse(control["configured"])
+                self.assertTrue(control["configured"])
                 self.assertEqual(control["generation"], 0)
                 self.assertTrue(control["boot_id"])
             reset = urllib.request.Request("http://127.0.0.1:4002/reset", method="POST",
@@ -65,9 +65,32 @@ class FakeBoundaryTest(unittest.TestCase):
                 headers={"Content-Type": "application/json"})
             with self.assertRaises(urllib.error.HTTPError) as pending:
                 opener.open(reset, timeout=3)
-            self.assertEqual(pending.exception.code, 503)
+            self.assertEqual(pending.exception.code, 400)
             pending.exception.close()
-            self.assertEqual(request("/api/print-portal/v2/batches", False)[0], 503)
+            self.assertEqual(request("/api/print-portal/v2/batches", False)[0], 401)
+            def admin(path, payload):
+                req = urllib.request.Request("http://127.0.0.1:4002" + path, method="POST",
+                    data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+                with opener.open(req, timeout=3) as response:
+                    return json.load(response)
+            prepared = admin("/reset", {"boot_id":control["boot_id"],"generation":0,
+                "trial_id":"bundle-test","scenario":"flow"})
+            admin("/start", {k:prepared[k] for k in ("boot_id","generation","trial_id")})
+            code, data = request("/api/print-portal/v2/batches/open")
+            self.assertEqual(code, 200)
+            batch = json.loads(data)["batch"]
+            item = batch["items"][0]
+            file = item["jobs"][0]["file"]
+            code, data = request("/api/print-portal/v2/batches/" + batch["id"] + "/orders/" + item["orderId"] + "/files/" + file["id"])
+            self.assertEqual(code, 200)
+            import hashlib
+            self.assertEqual(hashlib.sha256(data).hexdigest(), file["sha256"])
+            self.assertEqual(len(data), file["bytes"])
+            with opener.open("http://127.0.0.1:4002/manifest", timeout=3) as response:
+                manifest = json.load(response)
+                self.assertEqual(manifest["source_sha"], "270224676d61431c2d26a8e20ec911c328a1f5f3")
+                self.assertEqual(manifest["generation"], 1)
+                self.assertEqual(manifest["checkpoints"], [])
             self.assertEqual(request("/__ttp/status", False)[0], 404)
             self.assertEqual(request("/api/print-portal/v1/orders", False)[0], 401)
             code, body = request("/api/print-portal/v1/orders")

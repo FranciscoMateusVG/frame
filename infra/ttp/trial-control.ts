@@ -96,8 +96,16 @@ export class TrialControl<S> {
     return this.state;
   }
 
+  checkpoint<T>(input: Stamp, operation: (state: S) => T): T {
+    this.fence(input);
+    if (this.phase !== 'active') refuse(409, 'INVALID_CONTROL_PHASE');
+    if (this.inFlight) refuse(409, 'COMMAND_IN_FLIGHT');
+    return operation(this.current());
+  }
+
   async command<T>(operation: (state: S) => Promise<T>): Promise<T> {
     if (this.phase !== 'active') refuse(409, 'TRIAL_NOT_ACTIVE');
+    if (this.inFlight >= 2) refuse(503, 'COMMAND_CAPACITY');
     this.inFlight += 1;
     try {
       return await operation(this.current());
@@ -153,7 +161,25 @@ function stampInput(value: Record<string, unknown>, reset: boolean): Stamp {
   return value as Stamp;
 }
 
-async function dispatch<S>(req: IncomingMessage, control: TrialControl<S>) {
+type AdminOptions<S> = {
+  manifest?: () => unknown;
+  checkpoint?: (state: S, event: string) => unknown;
+};
+async function dispatch<S>(
+  req: IncomingMessage,
+  control: TrialControl<S>,
+  options: AdminOptions<S>,
+) {
+  if (req.method === 'GET' && req.url === '/manifest' && options.manifest)
+    return options.manifest();
+  if (req.url === '/checkpoint' && options.checkpoint) {
+    if (req.method !== 'POST') refuse(405, 'METHOD_NOT_ALLOWED');
+    const { event, ...rest } = await body(req);
+    if (!identifier(event)) refuse(400, 'INVALID_CONTROL_INPUT');
+    const stamp = stampInput(rest, false);
+    const apply = options.checkpoint;
+    return control.checkpoint(stamp, (state) => apply(state, event));
+  }
   if (req.method === 'GET' && req.url === '/status') return control.status();
   if (!['/reset', '/start', '/finish', '/abort'].includes(req.url ?? '')) refuse(404, 'NOT_FOUND');
   if (req.method !== 'POST') refuse(405, 'METHOD_NOT_ALLOWED');
@@ -165,7 +191,11 @@ async function dispatch<S>(req: IncomingMessage, control: TrialControl<S>) {
 }
 
 /** Never attached to the service listener, published ports or proxy routes. */
-export function startTrialAdmin<S>(control: TrialControl<S>, port = 4002) {
+export function startTrialAdmin<S>(
+  control: TrialControl<S>,
+  port = 4002,
+  options: AdminOptions<S> = {},
+) {
   const server = createServer(async (req, res) => {
     const respond = (status: number, value: unknown) => {
       res.writeHead(status, {
@@ -180,7 +210,7 @@ export function startTrialAdmin<S>(control: TrialControl<S>, port = 4002) {
       const bound = server.address();
       const host = typeof bound === 'object' && bound ? `127.0.0.1:${bound.port}` : '';
       localOnly(req, host);
-      respond(200, await dispatch(req, control));
+      respond(200, await dispatch(req, control, options));
     } catch (error) {
       // Neither body, authorization, error message nor stack goes to logs/replies.
       respond(error instanceof ControlError ? error.status : 500, {

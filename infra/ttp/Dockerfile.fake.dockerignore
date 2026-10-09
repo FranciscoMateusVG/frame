@@ -15,3 +15,5 @@ tmp
 examples
 scripts
 docker
+
+!infra/ttp/contracts/print-portal-v2.md
