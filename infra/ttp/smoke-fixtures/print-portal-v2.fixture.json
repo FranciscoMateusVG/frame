@@ -1,0 +1,836 @@
+{
+  "schemaVersion": 2,
+  "description": "Synthetic state snapshots of ONE batch, not eight simultaneously persisted batches.",
+  "batches": [
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "reference": "LOT-0001",
+      "status": "open",
+      "version": 1,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": null,
+      "printedAt": null,
+      "receivedAt": null,
+      "approvedAmountCents": null,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          }
+        }
+      ],
+      "currentQuote": null,
+      "cancellationReason": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "reference": "LOT-0001",
+      "status": "files_collected",
+      "version": 2,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": "2026-09-10T12:00:00.000Z",
+      "printedAt": null,
+      "receivedAt": null,
+      "approvedAmountCents": null,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          }
+        }
+      ],
+      "currentQuote": null,
+      "cancellationReason": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "reference": "LOT-0001",
+      "status": "quote_pending",
+      "version": 3,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": "2026-09-10T12:00:00.000Z",
+      "printedAt": null,
+      "receivedAt": null,
+      "approvedAmountCents": null,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          }
+        }
+      ],
+      "currentQuote": {
+        "id": "00000000-0000-4000-8000-0000000000c8",
+        "revision": 1,
+        "amountCents": 45900,
+        "currency": "BRL",
+        "document": {
+          "id": "00000000-0000-4000-8000-0000000000c8",
+          "name": "Orçamento do lote.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "d488caaa9e44d9c5e710e2eea5164f4bc3f9acfa92a9bd6cdae192219edd8c46"
+        },
+        "decision": "pending",
+        "rejectionReason": null,
+        "submittedAt": "2026-09-10T12:00:00.000Z",
+        "decidedAt": null
+      },
+      "cancellationReason": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "reference": "LOT-0001",
+      "status": "quote_rejected",
+      "version": 4,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": "2026-09-10T12:00:00.000Z",
+      "printedAt": null,
+      "receivedAt": null,
+      "approvedAmountCents": null,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          }
+        }
+      ],
+      "currentQuote": {
+        "id": "00000000-0000-4000-8000-0000000000c8",
+        "revision": 1,
+        "amountCents": 45900,
+        "currency": "BRL",
+        "document": {
+          "id": "00000000-0000-4000-8000-0000000000c8",
+          "name": "Orçamento do lote.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "d488caaa9e44d9c5e710e2eea5164f4bc3f9acfa92a9bd6cdae192219edd8c46"
+        },
+        "decision": "rejected",
+        "rejectionReason": "Corrigir quantidade total",
+        "submittedAt": "2026-09-10T12:00:00.000Z",
+        "decidedAt": "2026-09-10T12:00:00.000Z"
+      },
+      "cancellationReason": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "reference": "LOT-0001",
+      "status": "quote_approved",
+      "version": 5,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": "2026-09-10T12:00:00.000Z",
+      "printedAt": null,
+      "receivedAt": null,
+      "approvedAmountCents": 45900,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          }
+        }
+      ],
+      "currentQuote": {
+        "id": "00000000-0000-4000-8000-0000000000c8",
+        "revision": 1,
+        "amountCents": 45900,
+        "currency": "BRL",
+        "document": {
+          "id": "00000000-0000-4000-8000-0000000000c8",
+          "name": "Orçamento do lote.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "d488caaa9e44d9c5e710e2eea5164f4bc3f9acfa92a9bd6cdae192219edd8c46"
+        },
+        "decision": "approved",
+        "rejectionReason": null,
+        "submittedAt": "2026-09-10T12:00:00.000Z",
+        "decidedAt": "2026-09-10T12:00:00.000Z"
+      },
+      "cancellationReason": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "reference": "LOT-0001",
+      "status": "printed",
+      "version": 6,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": "2026-09-10T12:00:00.000Z",
+      "printedAt": "2026-09-10T12:00:00.000Z",
+      "receivedAt": null,
+      "approvedAmountCents": 45900,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          }
+        }
+      ],
+      "currentQuote": {
+        "id": "00000000-0000-4000-8000-0000000000c8",
+        "revision": 1,
+        "amountCents": 45900,
+        "currency": "BRL",
+        "document": {
+          "id": "00000000-0000-4000-8000-0000000000c8",
+          "name": "Orçamento do lote.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "d488caaa9e44d9c5e710e2eea5164f4bc3f9acfa92a9bd6cdae192219edd8c46"
+        },
+        "decision": "approved",
+        "rejectionReason": null,
+        "submittedAt": "2026-09-10T12:00:00.000Z",
+        "decidedAt": "2026-09-10T12:00:00.000Z"
+      },
+      "cancellationReason": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "reference": "LOT-0001",
+      "status": "received",
+      "version": 7,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": "2026-09-10T12:00:00.000Z",
+      "printedAt": "2026-09-10T12:00:00.000Z",
+      "receivedAt": "2026-09-10T12:00:00.000Z",
+      "approvedAmountCents": 45900,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          }
+        }
+      ],
+      "currentQuote": {
+        "id": "00000000-0000-4000-8000-0000000000c8",
+        "revision": 1,
+        "amountCents": 45900,
+        "currency": "BRL",
+        "document": {
+          "id": "00000000-0000-4000-8000-0000000000c8",
+          "name": "Orçamento do lote.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "d488caaa9e44d9c5e710e2eea5164f4bc3f9acfa92a9bd6cdae192219edd8c46"
+        },
+        "decision": "approved",
+        "rejectionReason": null,
+        "submittedAt": "2026-09-10T12:00:00.000Z",
+        "decidedAt": "2026-09-10T12:00:00.000Z"
+      },
+      "cancellationReason": null
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000064",
+      "reference": "LOT-0001",
+      "status": "cancelled",
+      "version": 8,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": "2026-09-10T12:00:00.000Z",
+      "printedAt": null,
+      "receivedAt": null,
+      "approvedAmountCents": null,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          }
+        }
+      ],
+      "currentQuote": null,
+      "cancellationReason": "Cancelamento integral sintético"
+    }
+  ],
+  "monthlyClose": {
+    "close": {
+      "id": "00000000-0000-4000-8000-00000000012c",
+      "competence": "2026-09",
+      "version": 2,
+      "state": "open",
+      "periodClosed": true,
+      "items": [
+        {
+          "kind": "batch",
+          "batchId": "00000000-0000-4000-8000-000000000064",
+          "reference": "LOT-0001",
+          "quoteId": "00000000-0000-4000-8000-0000000000c8",
+          "amountCents": 45900,
+          "printedAt": "2026-09-10T12:00:00.000Z"
+        },
+        {
+          "kind": "legacy_order",
+          "orderId": "00000000-0000-4000-8000-00000000012d",
+          "reference": "IMP-0301",
+          "quoteId": "00000000-0000-4000-8000-00000000012e",
+          "amountCents": 1000,
+          "printedAt": "2026-09-10T12:00:00.000Z"
+        }
+      ],
+      "expectedTotalCents": 46900,
+      "declaredTotalCents": null,
+      "document": null,
+      "rejectionReason": null,
+      "submittedAt": null,
+      "acceptedAt": null
+    }
+  },
+  "visibilityTimeline": [
+    {
+      "event": "before_collection",
+      "currentBatchId": "00000000-0000-4000-8000-000000000064",
+      "currentBatchStatus": "open",
+      "memberSolicitationStatus": "pending",
+      "queuedPendingReferences": [],
+      "openBatchId": "00000000-0000-4000-8000-000000000064"
+    },
+    {
+      "event": "collection_committed",
+      "currentBatchId": "00000000-0000-4000-8000-000000000064",
+      "currentBatchStatus": "files_collected",
+      "memberSolicitationStatus": "in_progress",
+      "queuedPendingReferences": [],
+      "openBatchId": null
+    },
+    {
+      "event": "new_request_published",
+      "currentBatchId": "00000000-0000-4000-8000-000000000064",
+      "currentBatchStatus": "files_collected",
+      "memberSolicitationStatus": "in_progress",
+      "queuedPendingReferences": [
+        "IMP-0002"
+      ],
+      "openBatchId": null
+    },
+    {
+      "event": "printed",
+      "currentBatchId": "00000000-0000-4000-8000-000000000064",
+      "currentBatchStatus": "printed",
+      "memberSolicitationStatus": "in_progress",
+      "queuedPendingReferences": [
+        "IMP-0002"
+      ],
+      "openBatchId": null
+    },
+    {
+      "event": "received_committed",
+      "currentBatchId": "00000000-0000-4000-8000-000000000101",
+      "currentBatchStatus": "open",
+      "previousBatchId": "00000000-0000-4000-8000-000000000064",
+      "previousBatchStatus": "received",
+      "previousMemberSolicitationStatus": "approved",
+      "queuedPendingReferences": [],
+      "openBatchId": "00000000-0000-4000-8000-000000000101",
+      "nextMemberReference": "IMP-0002",
+      "nextMemberSolicitationStatus": "pending"
+    }
+  ],
+  "cancellationTimeline": [
+    {
+      "event": "active_before_cancel",
+      "batchId": "00000000-0000-4000-8000-000000000064",
+      "status": "quote_approved",
+      "memberSolicitationStatus": "in_progress",
+      "queuedPendingReferences": [
+        "IMP-0002"
+      ]
+    },
+    {
+      "event": "cancellation_committed",
+      "previousBatchId": "00000000-0000-4000-8000-000000000064",
+      "previousBatchStatus": "cancelled",
+      "previousMemberSolicitationStatus": "pending",
+      "currentBatchId": "00000000-0000-4000-8000-000000000102",
+      "currentBatchStatus": "open",
+      "memberReferences": [
+        "IMP-0001",
+        "IMP-0002"
+      ],
+      "currentQuote": null,
+      "currentBatchReference": "LOT-0003"
+    }
+  ],
+  "rebatchedBatch": {
+    "batch": {
+      "id": "00000000-0000-4000-8000-000000000102",
+      "reference": "LOT-0003",
+      "status": "open",
+      "version": 1,
+      "itemCount": 2,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": null,
+      "printedAt": null,
+      "receivedAt": null,
+      "approvedAmountCents": null,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000001",
+          "reference": "IMP-0001",
+          "title": "Materiais sintéticos da turma",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-00000000006f",
+              "title": "2.2 - Turma 9h - Revisão Tucanos",
+              "copies": 24,
+              "instructions": "Frente e verso",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000b",
+                "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+              }
+            },
+            {
+              "id": "00000000-0000-4000-8000-000000000070",
+              "title": "3.1 - Turma 10h - Atividade Araras",
+              "copies": 12,
+              "instructions": "Colorido, uma face",
+              "file": {
+                "id": "00000000-0000-4000-8000-00000000000c",
+                "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+              }
+            }
+          ],
+          "generalInstructions": {
+            "text": "Orientação geral: entregar sem grampos.\n\nBloco sem arquivo\nCópias: 3\nPapel reciclado",
+            "files": [
+              {
+                "id": "00000000-0000-4000-8000-00000000000d",
+                "name": "Documento sem bloco.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+              }
+            ]
+          },
+          "previouslyCancelledIn": "LOT-0001"
+        },
+        {
+          "orderId": "00000000-0000-4000-8000-000000000002",
+          "reference": "IMP-0002",
+          "title": "Solicitação pendente posterior",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-000000000079",
+              "title": "Atividade nova de Ciências",
+              "copies": 8,
+              "instructions": "Uma face, preto e branco",
+              "file": {
+                "id": "00000000-0000-4000-8000-000000000015",
+                "name": "Atividade nova de Ciências-g7h8j9-1791384859861.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "99f2220b01d0cd1214b4b2605d8ead1cbcee6e627529ec542f50dc45435ea099"
+              }
+            }
+          ]
+        }
+      ],
+      "currentQuote": null,
+      "cancellationReason": null
+    }
+  },
+  "queuedItem": {
+    "orderId": "00000000-0000-4000-8000-000000000002",
+    "reference": "IMP-0002",
+    "title": "Solicitação pendente posterior",
+    "revision": 1,
+    "jobs": [
+      {
+        "id": "00000000-0000-4000-8000-000000000079",
+        "title": "Atividade nova de Ciências",
+        "copies": 8,
+        "instructions": "Uma face, preto e branco",
+        "file": {
+          "id": "00000000-0000-4000-8000-000000000015",
+          "name": "Atividade nova de Ciências-g7h8j9-1791384859861.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "99f2220b01d0cd1214b4b2605d8ead1cbcee6e627529ec542f50dc45435ea099"
+        }
+      }
+    ]
+  },
+  "nextBatch": {
+    "batch": {
+      "id": "00000000-0000-4000-8000-000000000101",
+      "reference": "LOT-0002",
+      "status": "open",
+      "version": 1,
+      "itemCount": 1,
+      "createdAt": "2026-09-10T12:00:00.000Z",
+      "collectedAt": null,
+      "printedAt": null,
+      "receivedAt": null,
+      "approvedAmountCents": null,
+      "items": [
+        {
+          "orderId": "00000000-0000-4000-8000-000000000002",
+          "reference": "IMP-0002",
+          "title": "Solicitação pendente posterior",
+          "revision": 1,
+          "jobs": [
+            {
+              "id": "00000000-0000-4000-8000-000000000079",
+              "title": "Atividade nova de Ciências",
+              "copies": 8,
+              "instructions": "Uma face, preto e branco",
+              "file": {
+                "id": "00000000-0000-4000-8000-000000000015",
+                "name": "Atividade nova de Ciências-g7h8j9-1791384859861.pdf",
+                "mime": "application/pdf",
+                "bytes": 634,
+                "sha256": "99f2220b01d0cd1214b4b2605d8ead1cbcee6e627529ec542f50dc45435ea099"
+              }
+            }
+          ]
+        }
+      ],
+      "currentQuote": null,
+      "cancellationReason": null
+    }
+  }
+}

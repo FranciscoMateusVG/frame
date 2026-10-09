@@ -1,0 +1,17 @@
+{
+  "source_repository": "FranciscoMateusVG/monorepo-incluir",
+  "source_sha": "270224676d61431c2d26a8e20ec911c328a1f5f3",
+  "source_directory": "apps/hono-app/docs/contracts",
+  "files": {
+    "print-portal-v2.assets/.gitattributes": "547f59603028195ff9f8a87d04c4651551e8bd0d68f075257dfd549cd846b25b",
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000b.pdf": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7",
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000c.pdf": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385",
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000d.pdf": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16",
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000e.pdf": "9b283951022b8338fa54bcabb546487d75580752f45adbd0565c06ca17ef33de",
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000f.pdf": "cac4307ddf3dbacadb48771be3040e30f2498c82812c81e9e7e58726a9bf9d3d",
+    "print-portal-v2.assets/00000000-0000-4000-8000-000000000015.pdf": "99f2220b01d0cd1214b4b2605d8ead1cbcee6e627529ec542f50dc45435ea099",
+    "print-portal-v2.assets/00000000-0000-4000-8000-0000000000c8.pdf": "d488caaa9e44d9c5e710e2eea5164f4bc3f9acfa92a9bd6cdae192219edd8c46",
+    "print-portal-v2.assets/index.json": "8ec49848fd225d19e787427de46b332583b99af2633c74c636d0050f9470a139",
+    "print-portal-v2.fixture.json": "c23bf5a4f8c908b3c9db0975a55f0a9a9dd2742c73f781cff7aec6938204b591"
+  }
+}
