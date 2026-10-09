@@ -1,0 +1,256 @@
+{
+  "policy": "legacy-title-prefix-v1",
+  "cases": [
+    {
+      "name": "reordered-mixed",
+      "details": "Orientação geral: entregar sem grampos.",
+      "metadata": {
+        "printJobs": [
+          {
+            "fileTitle": "2.2 - Turma 9h - Revisão Tucanos",
+            "copies": "24",
+            "printInstructions": "Frente e verso"
+          },
+          {
+            "fileTitle": "3.1 - Turma 10h - Atividade Araras",
+            "copies": "12",
+            "printInstructions": "Colorido, uma face"
+          },
+          {
+            "fileTitle": "Bloco sem arquivo",
+            "copies": "3",
+            "printInstructions": "Papel reciclado"
+          }
+        ]
+      },
+      "files": [
+        {
+          "id": "00000000-0000-4000-8000-00000000000c",
+          "name": "3.1 - Turma 10h - Atividade Araras-d4e5f6-1791384859852.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+        },
+        {
+          "id": "00000000-0000-4000-8000-00000000000d",
+          "name": "Documento sem bloco.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+        },
+        {
+          "id": "00000000-0000-4000-8000-00000000000b",
+          "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+        }
+      ],
+      "expectedPairs": [
+        {
+          "title": "2.2 - Turma 9h - Revisão Tucanos",
+          "fileId": "00000000-0000-4000-8000-00000000000b"
+        },
+        {
+          "title": "3.1 - Turma 10h - Atividade Araras",
+          "fileId": "00000000-0000-4000-8000-00000000000c"
+        }
+      ],
+      "expectedResidualFileIds": [
+        "00000000-0000-4000-8000-00000000000d"
+      ],
+      "expectedResidualTitles": [
+        "Bloco sem arquivo"
+      ]
+    },
+    {
+      "name": "duplicate-block",
+      "details": null,
+      "metadata": {
+        "printJobs": [
+          {
+            "fileTitle": "2.2 - Turma 9h - Revisão Tucanos",
+            "copies": "24",
+            "printInstructions": "Frente e verso"
+          },
+          {
+            "fileTitle": "2.2 - Turma 9h - Revisão Tucanos",
+            "copies": "24",
+            "printInstructions": "Frente e verso"
+          }
+        ]
+      },
+      "files": [
+        {
+          "id": "00000000-0000-4000-8000-00000000000b",
+          "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+        }
+      ],
+      "expectedPairs": [],
+      "expectedResidualFileIds": [
+        "00000000-0000-4000-8000-00000000000b"
+      ],
+      "expectedResidualTitles": [
+        "2.2 - Turma 9h - Revisão Tucanos",
+        "2.2 - Turma 9h - Revisão Tucanos"
+      ]
+    },
+    {
+      "name": "duplicate-file-prefix",
+      "details": null,
+      "metadata": {
+        "printJobs": [
+          {
+            "fileTitle": "2.2 - Turma 9h - Revisão Tucanos",
+            "copies": "24",
+            "printInstructions": "Frente e verso"
+          }
+        ]
+      },
+      "files": [
+        {
+          "id": "00000000-0000-4000-8000-00000000000b",
+          "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+        },
+        {
+          "id": "00000000-0000-4000-8000-00000000000e",
+          "name": "2.2 - Turma 9h - Revisão Tucanos-xyz987-1791384859853.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "9b283951022b8338fa54bcabb546487d75580752f45adbd0565c06ca17ef33de"
+        }
+      ],
+      "expectedPairs": [],
+      "expectedResidualFileIds": [
+        "00000000-0000-4000-8000-00000000000b",
+        "00000000-0000-4000-8000-00000000000e"
+      ],
+      "expectedResidualTitles": [
+        "2.2 - Turma 9h - Revisão Tucanos"
+      ]
+    },
+    {
+      "name": "almost-title",
+      "details": null,
+      "metadata": {
+        "printJobs": [
+          {
+            "fileTitle": "2.2 - Turma 9h - Revisão Tucanoss",
+            "copies": "24",
+            "printInstructions": "Frente e verso"
+          }
+        ]
+      },
+      "files": [
+        {
+          "id": "00000000-0000-4000-8000-00000000000b",
+          "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+        }
+      ],
+      "expectedPairs": [],
+      "expectedResidualFileIds": [
+        "00000000-0000-4000-8000-00000000000b"
+      ],
+      "expectedResidualTitles": [
+        "2.2 - Turma 9h - Revisão Tucanoss"
+      ]
+    },
+    {
+      "name": "invalid-suffix",
+      "details": null,
+      "metadata": {
+        "printJobs": [
+          {
+            "fileTitle": "2.2 - Turma 9h - Revisão Tucanos",
+            "copies": "24",
+            "printInstructions": "Frente e verso"
+          }
+        ]
+      },
+      "files": [
+        {
+          "id": "00000000-0000-4000-8000-00000000000f",
+          "name": "2.2 - Turma 9h - Revisão Tucanos-foo.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "cac4307ddf3dbacadb48771be3040e30f2498c82812c81e9e7e58726a9bf9d3d"
+        }
+      ],
+      "expectedPairs": [],
+      "expectedResidualFileIds": [
+        "00000000-0000-4000-8000-00000000000f"
+      ],
+      "expectedResidualTitles": [
+        "2.2 - Turma 9h - Revisão Tucanos"
+      ]
+    },
+    {
+      "name": "invalid-copies",
+      "details": null,
+      "metadata": {
+        "printJobs": [
+          {
+            "fileTitle": "2.2 - Turma 9h - Revisão Tucanos",
+            "copies": "0",
+            "printInstructions": "Frente e verso"
+          }
+        ]
+      },
+      "files": [
+        {
+          "id": "00000000-0000-4000-8000-00000000000b",
+          "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+        }
+      ],
+      "expectedPairs": [],
+      "expectedResidualFileIds": [
+        "00000000-0000-4000-8000-00000000000b"
+      ],
+      "expectedResidualTitles": [
+        "2.2 - Turma 9h - Revisão Tucanos"
+      ]
+    },
+    {
+      "name": "unicode-nfd",
+      "details": null,
+      "metadata": {
+        "printJobs": [
+          {
+            "fileTitle": "2.2 - Turma 9h - Revisão Tucanos",
+            "copies": "24",
+            "printInstructions": "Frente e verso"
+          }
+        ]
+      },
+      "files": [
+        {
+          "id": "00000000-0000-4000-8000-00000000000b",
+          "name": "2.2 - Turma 9h - Revisão Tucanos-a1b2c3-1791384859851.pdf",
+          "mime": "application/pdf",
+          "bytes": 634,
+          "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+        }
+      ],
+      "expectedPairs": [
+        {
+          "title": "2.2 - Turma 9h - Revisão Tucanos",
+          "fileId": "00000000-0000-4000-8000-00000000000b"
+        }
+      ],
+      "expectedResidualFileIds": [],
+      "expectedResidualTitles": []
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { cpSync } from 'node:fs';
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
@@ -11,4 +12,7 @@ export default defineConfig({
   splitting: false,
   sourcemap: false,
   clean: true,
+  onSuccess: async () => {
+    cpSync('infra/ttp/contracts', 'dist/ttp/contracts', { recursive: true });
+  },
 });

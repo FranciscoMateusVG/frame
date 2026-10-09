@@ -1,0 +1,74 @@
+{
+  "source_repository": "FranciscoMateusVG/monorepo-incluir",
+  "source_sha": "270224676d61431c2d26a8e20ec911c328a1f5f3",
+  "files": {
+    "print-portal-v2.assets/.gitattributes": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/.gitattributes",
+      "bytes": 13,
+      "sha256": "547f59603028195ff9f8a87d04c4651551e8bd0d68f075257dfd549cd846b25b"
+    },
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000b.pdf": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/00000000-0000-4000-8000-00000000000b.pdf",
+      "bytes": 634,
+      "sha256": "01c5259f1937d0129049322831d14eb9b295293467fa9f9a7269f413d641f0a7"
+    },
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000c.pdf": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/00000000-0000-4000-8000-00000000000c.pdf",
+      "bytes": 634,
+      "sha256": "a51d09513d2635c869d545c6eb7238ba5d3588a5e2b516a832ce13f298bee385"
+    },
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000d.pdf": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/00000000-0000-4000-8000-00000000000d.pdf",
+      "bytes": 634,
+      "sha256": "768884ea95f392942d670ae34b999495fbc21d978025f566121ba8ab0fbf4a16"
+    },
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000e.pdf": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/00000000-0000-4000-8000-00000000000e.pdf",
+      "bytes": 634,
+      "sha256": "9b283951022b8338fa54bcabb546487d75580752f45adbd0565c06ca17ef33de"
+    },
+    "print-portal-v2.assets/00000000-0000-4000-8000-00000000000f.pdf": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/00000000-0000-4000-8000-00000000000f.pdf",
+      "bytes": 634,
+      "sha256": "cac4307ddf3dbacadb48771be3040e30f2498c82812c81e9e7e58726a9bf9d3d"
+    },
+    "print-portal-v2.assets/00000000-0000-4000-8000-000000000015.pdf": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/00000000-0000-4000-8000-000000000015.pdf",
+      "bytes": 634,
+      "sha256": "99f2220b01d0cd1214b4b2605d8ead1cbcee6e627529ec542f50dc45435ea099"
+    },
+    "print-portal-v2.assets/00000000-0000-4000-8000-0000000000c8.pdf": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/00000000-0000-4000-8000-0000000000c8.pdf",
+      "bytes": 634,
+      "sha256": "d488caaa9e44d9c5e710e2eea5164f4bc3f9acfa92a9bd6cdae192219edd8c46"
+    },
+    "print-portal-v2.assets/index.json": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.assets/index.json",
+      "bytes": 605,
+      "sha256": "8ec49848fd225d19e787427de46b332583b99af2633c74c636d0050f9470a139"
+    },
+    "print-portal-v2.fixture.json": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.fixture.json",
+      "bytes": 30376,
+      "sha256": "c23bf5a4f8c908b3c9db0975a55f0a9a9dd2742c73f781cff7aec6938204b591"
+    },
+    "print-portal-v2.legacy-pairing.fixture.json": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.legacy-pairing.fixture.json",
+      "bytes": 7640,
+      "sha256": "c6cc2d612d2a1556614bc24fb83e839be4d4d43f8ee49549dc29379e841a282b"
+    },
+    "print-portal-v2.md": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.md",
+      "bytes": 12420,
+      "sha256": "9afef664422c78e007fd9c0d0232c1e3aa1befb6b814e97ae27083a56a462358"
+    },
+    "print-portal-v2.schema.json": {
+      "source_path": "apps/hono-app/docs/contracts/print-portal-v2.schema.json",
+      "bytes": 22799,
+      "sha256": "3aba84a912b4e82379b01d76ff6fc0390a1a38832787ce7709909ff6e1521258"
+    }
+  },
+  "deviations": [
+    "Fake accepts allowed upload MIME types and stores bytes as-is; does not transcode images. Stored byte length/hash/MIME remain consistent. TTP quote acceptance uses PDF only; Hono suites cover real transcoding."
+  ]
+}
