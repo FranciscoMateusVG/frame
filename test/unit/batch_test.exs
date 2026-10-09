@@ -27,6 +27,14 @@ defmodule Frame.Unit.BatchTest do
     assert Batch.next_action(no_quote) == :none
   end
 
+  test "active: collected until printed" do
+    for status <- ~w(files_collected quote_pending quote_rejected quote_approved printed),
+        do: assert(Batch.active?(BatchFixture.batch(status)), status)
+
+    for status <- ~w(open received cancelled),
+        do: refute(Batch.active?(BatchFixture.batch(status)), status)
+  end
+
   test "labels, ETag, counts and the per-file cards of a request" do
     batch = BatchFixture.rebatched()
     [mixed, plain] = batch["items"]

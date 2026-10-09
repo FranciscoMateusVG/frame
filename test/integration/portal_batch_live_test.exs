@@ -240,6 +240,65 @@ defmodule Frame.Integration.PortalBatchLiveTest do
       assert html =~ "Documento sem bloco.pdf"
     end
 
+    test "the home keeps the batch after collection: quote → approved → printed on /", %{
+      portal: p
+    } do
+      # History first, so the active batch is not the first one listed.
+      BatchFixture.seed(p.memory, [%{BatchFixture.batch("received") | "id" => Ids.uuid()}])
+      batch = BatchFixture.batch("open")
+      BatchFixture.seed(p.memory, batch)
+      {view, _html} = live_page(p, "/")
+
+      view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
+      html = view |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
+      assert html =~ "Retirada confirmada."
+      assert has_element?(view, ~s([data-ttp="batch"][data-status="files_collected"]))
+      assert has_element?(view, "#quote-form")
+
+      # A fresh visit to / finds the active batch too (/open is null now).
+      {view, _html} = live_page(p, "/")
+      upload(view, "orçamento.pdf", Portal.pdf("q"))
+      view |> form("#quote-form", %{"valor" => "459,00"}) |> render_submit()
+      html = view |> element("#confirm-quote button", "Confirmar envio") |> render_click()
+      assert html =~ "Orçamento enviado. Aguardando aprovação do Financeiro."
+
+      assert has_element?(
+               view,
+               ~s([data-ttp="status-message"]),
+               "Aguardando aprovação do Financeiro"
+             )
+
+      :ok = Memory.decide_batch_quote(p.memory, batch["id"], {:rejected, "Corrigir total"})
+      {view, html} = live_page(p, "/")
+      assert html =~ "Corrigir total"
+      upload(view, "orçamento2.pdf", Portal.pdf("q2"))
+      view |> form("#quote-form", %{"valor" => "450,00"}) |> render_submit()
+      view |> element("#confirm-quote button", "Confirmar envio") |> render_click()
+
+      :ok = Memory.decide_batch_quote(p.memory, batch["id"], :approved)
+      {view, _html} = live_page(p, "/")
+      view |> element(~s(button[data-action="mark-printed"])) |> render_click()
+      html = view |> element("#confirm-print button", "Confirmar impressão") |> render_click()
+      assert html =~ "Impressão confirmada."
+      {_view, html} = live_page(p, "/")
+      assert html =~ "Aguardando recebimento"
+      assert batch_status(p, batch) == "printed"
+    end
+
+    test "the active batch is found past the first page of the history", %{portal: p} do
+      base = %{BatchFixture.batch("received") | "createdAt" => "2026-08-01T12:00:00.000Z"}
+
+      for n <- 1..120 do
+        id = "00000000-0000-4000-a000-" <> String.pad_leading(Integer.to_string(n), 12, "0")
+        Memory.put_batch(p.memory, %{base | "id" => id}, %{})
+      end
+
+      BatchFixture.seed(p.memory, BatchFixture.batch("quote_approved"))
+      {_p, resp} = Portal.get(p, "/")
+      [root] = nodes(q(doc(resp.raw), ~s([data-ttp="batch"])))
+      assert attr(root, "data-status") == "quote_approved"
+    end
+
     test "a stale ETag gets 412: the page reloads and asks to confirm again", %{portal: p} do
       batch = BatchFixture.batch("open")
       BatchFixture.seed(p.memory, batch)

@@ -27,6 +27,8 @@ defmodule Frame.Domain.Batch do
     {"printed", "Impresso"}
   ]
 
+  @active ~w(files_collected quote_pending quote_rejected quote_approved printed)
+
   @typedoc "What the supplier can do next with the batch."
   @type action ::
           :collect | :quote | :requote | :await_decision | :print | :await_receipt | :none
@@ -37,6 +39,13 @@ defmodule Frame.Domain.Batch do
   @doc "Portuguese label of a batch status (unknown values are shown as-is)."
   @spec status_label(String.t()) :: String.t()
   def status_label(status), do: Map.get(@labels, status, status)
+
+  @doc """
+  True for a collected…printed batch: the current one once collected,
+  which `GET /batches/open` no longer returns.
+  """
+  @spec active?(map()) :: boolean()
+  def active?(%{"status" => status}), do: status in @active
 
   @doc "The next supplier action the screen should offer."
   @spec next_action(map()) :: action()

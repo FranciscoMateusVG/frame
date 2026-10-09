@@ -474,15 +474,19 @@ defmodule Frame.Adapters.PrintApi.Memory do
 
   # --- v2: batches ---
 
-  @current ~w(open files_collected quote_pending quote_rejected quote_approved printed)
+  @active ~w(files_collected quote_pending quote_rejected quote_approved printed)
 
+  # Only an `open` batch, and null while a collected…printed batch is active
+  # (that one is found through the history, GET /batches).
   @impl true
   def get_open_batch(api) do
     call(api, "getOpenBatch", fn state ->
-      case Enum.find(Map.values(state.batches), &(&1["status"] in @current)) do
-        nil -> {ok(200, %{"batch" => nil}), state}
-        batch -> {ok(200, %{"batch" => batch}, etag(batch)), state}
-      end
+      batches = Map.values(state.batches)
+      open = Enum.find(batches, &(&1["status"] == "open"))
+
+      if open == nil or Enum.any?(batches, &(&1["status"] in @active)),
+        do: {ok(200, %{"batch" => nil}), state},
+        else: {ok(200, %{"batch" => open}, etag(open)), state}
     end)
   end
 

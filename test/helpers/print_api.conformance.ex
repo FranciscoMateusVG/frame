@@ -356,6 +356,23 @@ defmodule Frame.Test.PrintApiConformance do
         assert {missing.status, code(missing)} == {404, "NOT_FOUND"}
       end
 
+      test "v2: /open is null while a collected…printed batch is active", %{api: api, memory: m} do
+        for status <- ~w(files_collected quote_pending quote_rejected quote_approved printed) do
+          Memory.put_batch(m, BatchFixture.batch(status), %{})
+
+          {:ok, %Response{status: 200, etag: nil, body: %{"batch" => nil}}} =
+            PrintApi.get_open_batch(api)
+        end
+
+        # LOT-0001 received: LOT-0002 is open; collecting it takes it out of /open.
+        Memory.put_batch(m, BatchFixture.batch("received"), %{})
+        Memory.put_batch(m, BatchFixture.next_batch(), %{})
+        open_id = BatchFixture.next_batch()["id"]
+        {:ok, %Response{body: %{"batch" => %{"id" => ^open_id}}}} = PrintApi.get_open_batch(api)
+        {:ok, _} = PrintApi.collect_batch(api, open_id, pre(~s("#{open_id}:1")))
+        {:ok, %Response{body: %{"batch" => nil}}} = PrintApi.get_open_batch(api)
+      end
+
       test "v2: history lists every batch as summaries, createdAt/id order, keyset cursor", %{
         api: api,
         memory: m
