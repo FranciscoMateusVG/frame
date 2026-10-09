@@ -1,7 +1,8 @@
 defmodule Frame.Adapters.PrintApi do
   @moduledoc """
   PrintApi — the port (behaviour) for the Incluir print-portal service API
-  (`/api/print-portal/v1`, spec §4.3; frozen contract in monorepo-incluir).
+  (`/api/print-portal/v1`, spec §4.3, and the batch contract
+  `/api/print-portal/v2`; frozen contracts in monorepo-incluir).
 
   Implementations:
 
@@ -56,6 +57,9 @@ defmodule Frame.Adapters.PrintApi do
           {:order_file, order_id :: String.t(), file_id :: String.t()}
           | {:quote_file, order_id :: String.t(), quote_id :: String.t()}
           | {:invoice_file, competence :: String.t()}
+          | {:batch_file, batch_id :: String.t(), order_id :: String.t(), file_id :: String.t()}
+          | {:batch_quote_file, batch_id :: String.t(), quote_id :: String.t()}
+          | {:batch_invoice_file, competence :: String.t()}
 
   @typedoc """
   A download sink: receives `{:head, headers}` once (for a 200), then
@@ -94,6 +98,28 @@ defmodule Frame.Adapters.PrintApi do
             ) :: result()
   @callback download(t(), target(), acc, sink(acc)) :: download_result(acc) when acc: term()
 
+  # --- v2: batches ---
+
+  @callback get_open_batch(t()) :: result()
+  @callback list_batches(t(), list_query()) :: result()
+  @callback get_batch(t(), String.t()) :: result()
+  @callback collect_batch(t(), String.t(), preconditions()) :: result()
+  @callback submit_batch_quote(
+              t(),
+              String.t(),
+              %{amount_cents: pos_integer(), file: upload()},
+              preconditions()
+            ) :: result()
+  @callback mark_batch_printed(t(), String.t(), %{quote_id: String.t()}, preconditions()) ::
+              result()
+  @callback get_batch_close(t(), String.t()) :: result()
+  @callback submit_batch_invoice(
+              t(),
+              String.t(),
+              %{declared_total_cents: pos_integer(), file: upload()},
+              preconditions()
+            ) :: result()
+
   @spec list_orders(t(), list_query()) :: result()
   def list_orders(%impl{} = api, query), do: impl.list_orders(api, query)
 
@@ -118,4 +144,31 @@ defmodule Frame.Adapters.PrintApi do
 
   @spec download(t(), target(), acc, sink(acc)) :: download_result(acc) when acc: term()
   def download(%impl{} = api, target, acc, sink), do: impl.download(api, target, acc, sink)
+
+  @spec get_open_batch(t()) :: result()
+  def get_open_batch(%impl{} = api), do: impl.get_open_batch(api)
+
+  @spec list_batches(t(), list_query()) :: result()
+  def list_batches(%impl{} = api, query), do: impl.list_batches(api, query)
+
+  @spec get_batch(t(), String.t()) :: result()
+  def get_batch(%impl{} = api, id), do: impl.get_batch(api, id)
+
+  @spec collect_batch(t(), String.t(), preconditions()) :: result()
+  def collect_batch(%impl{} = api, id, pre), do: impl.collect_batch(api, id, pre)
+
+  @spec submit_batch_quote(t(), String.t(), map(), preconditions()) :: result()
+  def submit_batch_quote(%impl{} = api, id, input, pre),
+    do: impl.submit_batch_quote(api, id, input, pre)
+
+  @spec mark_batch_printed(t(), String.t(), map(), preconditions()) :: result()
+  def mark_batch_printed(%impl{} = api, id, input, pre),
+    do: impl.mark_batch_printed(api, id, input, pre)
+
+  @spec get_batch_close(t(), String.t()) :: result()
+  def get_batch_close(%impl{} = api, competence), do: impl.get_batch_close(api, competence)
+
+  @spec submit_batch_invoice(t(), String.t(), map(), preconditions()) :: result()
+  def submit_batch_invoice(%impl{} = api, competence, input, pre),
+    do: impl.submit_batch_invoice(api, competence, input, pre)
 end

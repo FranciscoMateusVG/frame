@@ -9,12 +9,12 @@ defmodule Frame.Web.PageHTML do
 
   @messages %{
     not_found:
-      {"Não encontrado", "Este endereço não existe ou o pedido não está disponível para a gráfica.",
-       {"/orders", "Ir para Pedidos"}},
+      {"Não encontrado", "Este endereço não existe ou não está disponível para a gráfica.",
+       {"/", "Ir para o lote atual"}},
     forbidden:
       {"Requisição recusada",
        "A página expirou ou veio de outro endereço. Volte, recarregue a página e tente de novo.",
-       {"/orders", "Recarregar Pedidos"}}
+       {"/", "Recarregar o lote atual"}}
   }
 
   @doc "The login page (`error`: `nil`, `:invalid_credentials` or `:rate_limited`)."

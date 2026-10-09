@@ -5,10 +5,11 @@ defmodule Frame.Web.Router do
     * `GET /healthz` (liveness) and `GET /readyz` (upstream answers with the
       service token);
     * `/api/session` and the ten `/api/print/v1/...` service routes (JSON,
-      common to the TS/Rust/Elixir portals);
+      common to the TS/Rust/Elixir portals), plus the three v2 batch
+      downloads (`/api/print/v2/...`) the batch pages link to;
     * `/login` and `/logout` (controllers: they set and drop cookies);
-    * the supplier pages as LiveViews: `/orders`, `/orders/:id`,
-      `/invoices`.
+    * the supplier pages as LiveViews: `/` (the current batch), `/lotes`
+      and `/lotes/:id` (history), `/invoices`.
 
   Every other path or method is answered by `FallbackController` (404, or
   405 with `Allow` on a known path) — JSON under `/api`, HTML elsewhere.
@@ -63,13 +64,18 @@ defmodule Frame.Web.Router do
       post "/monthly-closes/:competence/invoice", PrintController, :submit_invoice
     end
 
+    scope "/print/v2" do
+      get "/batches/:id/orders/:order_id/files/:file_id", PrintController, :batch_file
+      get "/batches/:id/quotes/:quote_id/file", PrintController, :batch_quote_file
+      get "/monthly-closes/:competence/invoice", PrintController, :batch_invoice_file
+    end
+
     match :*, "/*path", FallbackController, :api
   end
 
   scope "/", Frame.Web do
     pipe_through :browser
 
-    get "/", LoginController, :root
     get "/login", LoginController, :new
     post "/login", LoginController, :create
     post "/logout", LoginController, :delete
@@ -78,8 +84,9 @@ defmodule Frame.Web.Router do
       pipe_through :signed_in
 
       live_session :portal, on_mount: Frame.Web.LiveAuth do
-        live "/orders", OrdersLive
-        live "/orders/:id", OrderLive
+        live "/", BatchLive, :current
+        live "/lotes", BatchesLive
+        live "/lotes/:id", BatchLive, :show
         live "/invoices", InvoicesLive
       end
     end

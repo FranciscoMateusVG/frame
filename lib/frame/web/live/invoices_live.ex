@@ -1,8 +1,9 @@
 defmodule Frame.Web.InvoicesLive do
   @moduledoc """
-  **Notas fiscais** (spec §7.9): one NF per month. **Competência** (the
-  last twelve months; the previous one by default), the printed orders of
-  the month and the **Total calculado**; the current month explains when it
+  **Notas fiscais** (spec §7.9): one NF per month, on the v2 monthly close.
+  **Competência** (the last twelve months; the previous one by default),
+  the month's printed batches (each linking to its detail) and historical
+  individual charges, each counted once, and the **Total calculado**; the current month explains when it
   closes. **Valor total da NF** + **Arquivo da NF** (LiveView upload, 5 MB
   cap) + **Enviar NF** → **Confirmar envio / Voltar**; then **Aguardando
   conferência**. A declared total that differs from the calculated one is
@@ -72,7 +73,7 @@ defmodule Frame.Web.InvoicesLive do
     key = Competence.to_string(socket.assigns.competence)
 
     result =
-      case UseCases.GetMonthlyClose.get_monthly_close(Deps.fetch(socket), key) do
+      case UseCases.GetBatchClose.get_batch_close(Deps.fetch(socket), key) do
         {:ok, %Response{status: 200, body: %{"close" => close}}} -> {:ok, close}
         {:ok, %Response{status: 404}} -> :not_available
         _ -> :unavailable
@@ -166,7 +167,7 @@ defmodule Frame.Web.InvoicesLive do
     competence = Competence.to_string(socket.assigns.competence)
 
     result =
-      UseCases.SubmitInvoice.submit_invoice(Deps.fetch(socket), competence, input, pre)
+      UseCases.SubmitBatchInvoice.submit_batch_invoice(Deps.fetch(socket), competence, input, pre)
 
     case Intent.outcome(result) do
       :done ->
@@ -344,15 +345,18 @@ defmodule Frame.Web.InvoicesLive do
         <table class="orders">
           <thead>
             <tr>
-              <th scope="col">Pedido</th>
+              <th scope="col">Lote ou pedido</th>
               <th scope="col">Impresso em</th>
               <th scope="col" class="num">Orçamento aprovado</th>
             </tr>
           </thead>
           <tbody>
             <tr :for={item <- @close["items"]}>
-              <td class="orders__ref" data-label="Pedido">
-                <.link navigate={"/orders/#{item["orderId"]}"}>{item["reference"]}</.link>
+              <td class="orders__ref" data-label="Lote ou pedido">
+                <.link :if={item["kind"] == "batch"} navigate={"/lotes/#{item["batchId"]}"}>
+                  {item["reference"]}
+                </.link>
+                <span :if={item["kind"] != "batch"}>{item["reference"]}</span>
               </td>
               <td data-label="Impresso em">{local_time(item["printedAt"])}</td>
               <td class="num" data-label="Orçamento aprovado">{money(item["amountCents"])}</td>
@@ -372,7 +376,7 @@ defmodule Frame.Web.InvoicesLive do
         <span class="job__size">{file_size(@close["document"]["bytes"])}</span>
         <a
           class="button button--small"
-          href={"/api/print/v1/monthly-closes/#{@close["competence"]}/invoice"}
+          href={"/api/print/v2/monthly-closes/#{@close["competence"]}/invoice"}
           download
         >
           Baixar NF enviada

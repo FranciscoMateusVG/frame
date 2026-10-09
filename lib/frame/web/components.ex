@@ -7,14 +7,14 @@ defmodule Frame.Web.Components do
 
   use Phoenix.Component
 
+  alias Frame.Domain.Batch
   alias Frame.Domain.Close
   alias Frame.Domain.Competence
   alias Frame.Domain.Money
-  alias Frame.Domain.Order
 
   @doc """
   The page shell. `nav` is `nil` (signed out) or `%{csrf: token, current:
-  :orders | :invoices | nil}`; Sair is a plain form POST to `/logout` (it
+  :batch | :history | :invoices | nil}`; Sair is a plain form POST to `/logout` (it
   drops a cookie, so it is not a socket event).
   """
   attr :nav, :map, default: nil
@@ -24,12 +24,15 @@ defmodule Frame.Web.Components do
     ~H"""
     <header class="top">
       <div class="top__inner">
-        <a class="brand" href="/orders">
+        <a class="brand" href="/">
           <span class="brand__mark" aria-hidden="true"></span>Gráfica
           <span class="brand__sub">Programa Incluir</span>
         </a>
         <nav :if={@nav} class="nav" aria-label="Principal">
-          <.link navigate="/orders" aria-current={@nav.current == :orders && "page"}>Pedidos</.link>
+          <.link navigate="/" aria-current={@nav.current == :batch && "page"}>Lote atual</.link>
+          <.link navigate="/lotes" aria-current={@nav.current == :history && "page"}>
+            Lotes anteriores
+          </.link>
           <.link navigate="/invoices" aria-current={@nav.current == :invoices && "page"}>
             Notas fiscais
           </.link>
@@ -85,7 +88,7 @@ defmodule Frame.Web.Components do
   def money(cents), do: Money.format_brl(cents)
 
   @doc false
-  def status_label(status), do: Order.status_label(status)
+  def status_label(status), do: Batch.status_label(status)
 
   @doc false
   def close_label(state), do: Close.state_label(state)
@@ -118,33 +121,4 @@ defmodule Frame.Web.Components do
 
   @doc false
   def opens_on(%Competence{} = c), do: local_date(Competence.opens_on(c))
-
-  @steps [
-    {"ready", "Pronto"},
-    {"files_collected", "Arquivos retirados"},
-    {"quote_pending", "Orçamento enviado"},
-    {"quote_approved", "Orçamento aprovado"},
-    {"printed", "Impresso"}
-  ]
-
-  @doc "The workflow track: `[{label, :done | :current | :todo}]`."
-  def steps(%{"status" => status}) do
-    status = if status == "quote_rejected", do: "quote_pending", else: status
-    index = Enum.find_index(@steps, fn {s, _} -> s == status end)
-
-    @steps
-    |> Enum.with_index()
-    |> Enum.map(fn {{_s, label}, i} ->
-      cond do
-        index == nil -> {label, :todo}
-        i < index -> {label, :done}
-        i == index and status == "printed" -> {label, :done}
-        i == index -> {label, :current}
-        true -> {label, :todo}
-      end
-    end)
-  end
-
-  @doc "Order status options for the filter."
-  def statuses, do: Enum.map(Order.statuses(), &{&1, Order.status_label(&1)})
 end

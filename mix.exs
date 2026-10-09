@@ -30,6 +30,7 @@ defmodule Frame.MixProject do
           Frame.Domain.Money => [lines: 95, functions: 95],
           Frame.Domain.Competence => [lines: 95, functions: 95],
           Frame.Domain.Order => [lines: 95, functions: 95],
+          Frame.Domain.Batch => [lines: 95, functions: 95],
           Frame.Domain.Document => [lines: 95, functions: 95],
           Frame.Domain.Requests => [lines: 95, functions: 95],
           Frame.Domain.Session => [lines: 95, functions: 95],
@@ -44,8 +45,8 @@ defmodule Frame.MixProject do
           Frame.Web.PrintController => [lines: 90, functions: 90],
           Frame.Web.LoginController => [lines: 90, functions: 90],
           Frame.Web.LiveAuth => [lines: 90, functions: 90],
-          Frame.Web.OrdersLive => [lines: 85, functions: 85],
-          Frame.Web.OrderLive => [lines: 85, functions: 85],
+          Frame.Web.BatchLive => [lines: 85, functions: 85],
+          Frame.Web.BatchesLive => [lines: 85, functions: 85],
           Frame.Web.InvoicesLive => [lines: 85, functions: 85],
           Frame.Config => [lines: 90, functions: 90]
         }
