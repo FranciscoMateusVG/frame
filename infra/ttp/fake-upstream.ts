@@ -6,6 +6,7 @@ import { PrintApiMemory } from '../../src/adapters/print-api.memory.js';
 import { UpstreamRejectedError } from '../../src/errors/upstream-rejected.error.js';
 import { startFakeUpstream } from '../../tests/helpers/fake-print-upstream.js';
 import fixtures from '../../tests/helpers/print-portal-v1.fixture.json';
+import { startTrialAdmin, TrialControl } from './trial-control.js';
 
 const token = process.env.INCLUIR_PRINT_SERVICE_TOKEN;
 if (!token || token.length < 32) throw new Error('Synthetic upstream token required');
@@ -35,6 +36,9 @@ class FrozenReadApi extends PrintApiMemory {
   }
 }
 
+// Deliberately fail closed until the NEW contract/asset freeze is approved.
+const trialControl = new TrialControl();
+const admin = startTrialAdmin(trialControl);
 const upstream = await startFakeUpstream({ token, api: new FrozenReadApi() });
 upstream.behaviour.delayMs = 0;
 // Production-like staging has no reason to retain authorization headers at all.
@@ -46,6 +50,19 @@ const server = createServer((incoming, outgoing) => {
   if (incoming.method === 'GET' && incoming.url === '/healthz') {
     outgoing.setHeader('Content-Type', 'application/json');
     outgoing.end(JSON.stringify({ status: 'ok', fixtureHash, orders: 1, delayMs: 0 }));
+    return;
+  }
+  if (incoming.url?.startsWith('/api/print-portal/v2')) {
+    outgoing.writeHead(503, { 'Content-Type': 'application/json' });
+    outgoing.end(
+      JSON.stringify({
+        error: {
+          code: 'NOT_CONFIGURED',
+          message: 'Fixture freeze pending',
+          requestId: 'ttp-scaffold',
+        },
+      }),
+    );
     return;
   }
   if (incoming.method !== 'GET') {
@@ -83,6 +100,8 @@ server.listen(4001, '0.0.0.0', () => {
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     console.log(JSON.stringify({ event: 'ttp_fake_stopping' }));
+    admin.close();
+    admin.closeAllConnections();
     server.close(() => void upstream.close().then(() => process.exit(0)));
     server.closeIdleConnections();
   });

@@ -12,8 +12,9 @@ import urllib.request
 
 class FakeBoundaryTest(unittest.TestCase):
     def test_frozen_http_and_clean_shutdown(self):
-        with socket.socket() as probe:
-            self.assertNotEqual(probe.connect_ex(("127.0.0.1", 4001)), 0, "port occupied")
+        for port in (4001, 4002):
+            with socket.socket() as probe:
+                self.assertNotEqual(probe.connect_ex(("127.0.0.1", port)), 0, "port occupied")
         token = "svc_" + secrets.token_hex(32)
         env = {**os.environ, "INCLUIR_PRINT_SERVICE_TOKEN": token}
         # Signal the actual runtime, not a Volta/fnm launcher subprocess.
@@ -51,6 +52,23 @@ class FakeBoundaryTest(unittest.TestCase):
                     time.sleep(0.1)
             else:
                 self.fail("fake startup timeout")
+            # The actual bundled server must wire the loopback control listener.
+            with opener.open("http://127.0.0.1:4002/status", timeout=3) as response:
+                control = json.load(response)
+                self.assertEqual(control["phase"], "idle")
+                self.assertFalse(control["configured"])
+                self.assertEqual(control["generation"], 0)
+                self.assertTrue(control["boot_id"])
+            reset = urllib.request.Request("http://127.0.0.1:4002/reset", method="POST",
+                data=json.dumps({"boot_id": control["boot_id"], "generation": 0,
+                    "trial_id": "not-a-trial", "scenario": "unconfigured"}).encode(),
+                headers={"Content-Type": "application/json"})
+            with self.assertRaises(urllib.error.HTTPError) as pending:
+                opener.open(reset, timeout=3)
+            self.assertEqual(pending.exception.code, 503)
+            pending.exception.close()
+            self.assertEqual(request("/api/print-portal/v2/batches", False)[0], 503)
+            self.assertEqual(request("/__ttp/status", False)[0], 404)
             self.assertEqual(request("/api/print-portal/v1/orders", False)[0], 401)
             code, body = request("/api/print-portal/v1/orders")
             page = json.loads(body)
