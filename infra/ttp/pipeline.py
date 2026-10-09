@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.request
 from timing import breakdown
-from feature_smoke import parse_config, validate_config
+from feature_smoke import parse_config, validate_config, require, failure_reason, BUNDLE
 
 STAGES = ["install", "lint-format", "typecheck-compile", "tests", "image-build",
           "staging-deploy", "staging-smoke"]
@@ -104,11 +104,21 @@ def execute(args):
         watcher.join(timeout=2)
 
 
+def fake_upstream_metadata(smoke_config, fake_sha):
+    validate_config(smoke_config)
+    v2 = smoke_config['mode'] == 'task1-v2'
+    if v2: require(smoke_config['fake_sha'] == fake_sha, 'smoke_fake_revision_mismatch')
+    return {"source_sha": fake_sha or None,
+            "fixture_sha256": BUNDLE if v2 else "9d1ab88ca294c4a446cce579e21a538e6a78f430b45770a71022c0a344093f6d",
+            "fixture_kind": "v2_bundle" if v2 else "v1_fixture",
+            "delay_ms": 0, "provenance": "pinned staging configuration; administrative readback at acceptance"}
+
+
 def init():
     kind = variant()
     sha = os.environ["GITHUB_SHA"]
-    assert re.fullmatch(r"[0-9a-f]{40}", sha)
-    assert capture(["git", "rev-parse", "HEAD"]) == sha
+    require(re.fullmatch(r"[0-9a-f]{40}", sha), 'pipeline_guard')
+    require(capture(["git", "rev-parse", "HEAD"]) == sha, 'pipeline_guard')
     versions = {
         "ts": [["node", "--version"], ["pnpm", "--version"]],
         "rust": [[str(Path.home() / ".cargo/bin/rustc"), "--version"], [RUST, "--version"]],
@@ -122,15 +132,13 @@ def init():
     }[kind]
     fake_sha = os.environ.get("TTP_FAKE_SHA", "")
     if os.environ["GITHUB_EVENT_NAME"] == "push":
-        assert re.fullmatch(r"[0-9a-f]{40}", fake_sha), "frozen upstream revision required"
+        require(re.fullmatch(r"[0-9a-f]{40}", fake_sha), 'pipeline_guard')
     smoke_config = parse_config(os.environ.get("TTP_SMOKE_CONFIG"))
     if smoke_config["mode"] == "task1-v2":
-        assert smoke_config["fake_sha"] == fake_sha, "smoke_fake_revision_mismatch"
+        require(smoke_config["fake_sha"] == fake_sha, "smoke_fake_revision_mismatch")
     save("context", {"schema_version": 1, "smoke_config": smoke_config,
          "smoke_config_sha256": hashlib.sha256(json.dumps(smoke_config, sort_keys=True).encode()).hexdigest(),
-         "fake_upstream": {"source_sha": fake_sha or None,
-             "fixture_sha256": "9d1ab88ca294c4a446cce579e21a538e6a78f430b45770a71022c0a344093f6d",
-             "delay_ms": 0, "provenance": "pinned staging configuration; administrative readback at acceptance"}, "variant": kind, "source_sha": sha,
+         "fake_upstream": fake_upstream_metadata(smoke_config, fake_sha), "variant": kind, "source_sha": sha,
          "repo": os.environ["GITHUB_REPOSITORY"], "event": os.environ["GITHUB_EVENT_NAME"],
          "branch": os.environ.get("GITHUB_BASE_REF") or os.environ["GITHUB_REF_NAME"],
          "run_id": os.environ["GITHUB_RUN_ID"], "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
@@ -142,7 +150,7 @@ def init():
 
 
 def run(stage):
-    assert stage in STAGES
+    require(stage in STAGES, 'pipeline_guard')
     ctx = load("context")
     try:
         admission = wait_idle()
@@ -193,16 +201,16 @@ def run(stage):
 
 def resume():
     ctx = load("context")
-    assert ctx["source_sha"] == os.environ["GITHUB_SHA"] == capture(["git", "rev-parse", "HEAD"])
-    assert ctx["event"] == "push" and ctx["repo"] == os.environ["GITHUB_REPOSITORY"]
-    assert ctx["run_id"] == os.environ["GITHUB_RUN_ID"]
-    assert ctx["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"]
-    assert ctx["variant"] == variant()
+    require(ctx["source_sha"] == os.environ["GITHUB_SHA"] == capture(["git", "rev-parse", "HEAD"]), 'pipeline_guard')
+    require(ctx["event"] == "push" and ctx["repo"] == os.environ["GITHUB_REPOSITORY"], 'pipeline_guard')
+    require(ctx["run_id"] == os.environ["GITHUB_RUN_ID"], 'pipeline_guard')
+    require(ctx["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"], 'pipeline_guard')
+    require(ctx["variant"] == variant(), 'pipeline_guard')
     validate_config(ctx["smoke_config"])
-    assert ctx["smoke_config_sha256"] == hashlib.sha256(json.dumps(ctx["smoke_config"], sort_keys=True).encode()).hexdigest()
+    require(ctx["smoke_config_sha256"] == hashlib.sha256(json.dumps(ctx["smoke_config"], sort_keys=True).encode()).hexdigest(), 'pipeline_guard')
     if ctx["smoke_config"]["mode"] == "task1-v2":
-        assert ctx["smoke_config"]["fake_sha"] == ctx["fake_upstream"]["source_sha"]
-    assert all(load(s)["status"] == "success" for s in STAGES[:4])
+        require(ctx["smoke_config"]["fake_sha"] == ctx["fake_upstream"]["source_sha"], 'pipeline_guard')
+    require(all(load(s)["status"] == "success" for s in STAGES[:4]), 'pipeline_guard')
     save("checks-report", load("ttp-timings"))
 
 
@@ -210,9 +218,9 @@ def cleanup():
     # Only this run's known image tag. Never prune shared caches/images/volumes.
     ctx = load("context")
     if ctx is None: return
-    assert ctx["run_id"] == os.environ["GITHUB_RUN_ID"]
-    assert ctx["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"]
-    assert ctx["variant"] == variant()
+    require(ctx["run_id"] == os.environ["GITHUB_RUN_ID"], 'pipeline_guard')
+    require(ctx["run_attempt"] == os.environ["GITHUB_RUN_ATTEMPT"], 'pipeline_guard')
+    require(ctx["variant"] == variant(), 'pipeline_guard')
     tag = f'frame-ttp-{ctx["variant"]}:{ctx["run_id"]}-{ctx["run_attempt"]}'
     exists = subprocess.run(["docker", "image", "inspect", tag], stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL).returncode == 0
@@ -295,5 +303,5 @@ if __name__ == "__main__":
         else: raise ValueError("unsupported operation")
     except Exception as error:
         # No exception repr/traceback: downstream HTTP failures can contain URLs/tokens.
-        print("TTP operation failed: " + type(error).__name__, file=sys.stderr)
+        print("TTP operation failed: " + type(error).__name__ + ": " + failure_reason(error), file=sys.stderr)
         sys.exit(1)

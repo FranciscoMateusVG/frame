@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import pipeline
+from feature_smoke import SmokeFailure
 
 
 class TimingTests(unittest.TestCase):
@@ -38,6 +39,13 @@ class TimingTests(unittest.TestCase):
             ).strip()
             self.assertEqual(output, tmp)
 
+    def test_fixture_hash_tracks_selected_mode(self):
+        from feature_smoke import BUNDLE, FAKE
+        from test_feature_smoke import config
+        self.assertEqual(pipeline.fake_upstream_metadata(config(), FAKE)['fixture_sha256'], BUNDLE)
+        self.assertEqual(pipeline.fake_upstream_metadata({'mode': 'v1'}, FAKE)['fixture_sha256'],
+                         '9d1ab88ca294c4a446cce579e21a538e6a78f430b45770a71022c0a344093f6d')
+
     def test_resume_uses_frozen_selector_not_changed_environment(self):
         from test_feature_smoke import config
         import hashlib
@@ -60,7 +68,7 @@ class TimingTests(unittest.TestCase):
                 self.assertEqual(pipeline.load("context")["smoke_config"], setting)
                 context["smoke_config"]["generation"] += 1
                 pipeline.save("context", context)
-                with self.assertRaises(AssertionError): pipeline.resume()
+                with self.assertRaises(SmokeFailure): pipeline.resume()
         finally:
             pipeline.STATE = previous_state
             os.environ.clear(); os.environ.update(previous_env)

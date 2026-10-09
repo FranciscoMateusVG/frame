@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pipeline import load, now, save
-from feature_smoke import validate_config, verify as verify_feature
+from feature_smoke import validate_config, verify as verify_feature, require, failure_reason
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -26,23 +26,23 @@ def json_request(url, body=None, headers=None):
     with STRICT.open(req, timeout=20) as response:
         if response.status != 200:
             raise RuntimeError("unexpected HTTP status")
-        assert response.headers.get_content_type() == "application/json"
+        require(response.headers.get_content_type() == "application/json", 'staging_guard')
         return json.load(response)
 
 
 def secret_reader():
-    assert os.environ["GITHUB_EVENT_NAME"] == "push"
+    require(os.environ["GITHUB_EVENT_NAME"] == "push", 'staging_guard')
     audience = "https://github.com/FranciscoMateusVG"
     oidc_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
     oidc_url += ("&" if "?" in oidc_url else "?") + urllib.parse.urlencode({"audience": audience})
     jwt = json_request(oidc_url, headers={"Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})["value"]
     base = os.environ["INFISICAL_URL"].rstrip("/")
-    assert urllib.parse.urlsplit(base).scheme in ("http", "https")
+    require(urllib.parse.urlsplit(base).scheme in ("http", "https"), 'staging_guard')
     auth = json_request(base + "/api/v1/auth/oidc-auth/login", {
         "identityId": os.environ["INFISICAL_IDENTITY_ID"], "jwt": jwt})
     headers = {"Authorization": "Bearer " + auth["accessToken"]}
     project = os.environ["INFISICAL_PROJECT_ID"]
-    assert project and os.environ["INFISICAL_ENVIRONMENT"] == "staging"
+    require(project and os.environ["INFISICAL_ENVIRONMENT"] == "staging", 'staging_guard')
     # A nonexistent key proves authorization denial without fetching real prod data.
     for denied_project, denied_env in [(project, "prod"), (os.environ["INFISICAL_DENIED_PROJECT_ID"], "prod")]:
         query = urllib.parse.urlencode({"workspaceId": denied_project, "environment": denied_env, "secretPath": "/"})
@@ -57,7 +57,7 @@ def secret_reader():
             raise RuntimeError("scope unexpectedly allowed")
 
     def read(key):
-        assert re.fullmatch(r"[A-Z_]+", key)
+        require(re.fullmatch(r"[A-Z_]+", key), 'staging_guard')
         query = urllib.parse.urlencode({"workspaceId": project, "environment": "staging", "secretPath": "/"})
         return json_request(base + "/api/v3/secrets/raw/" + key + "?" + query, headers=headers)["secret"]["secretValue"]
     return read
@@ -74,9 +74,9 @@ def deploy(ctx, origin):
     hook = read("DOKPLOY_WEBHOOK_" + ctx["variant"].upper())
     parsed = urllib.parse.urlsplit(hook)
     allowed = urllib.parse.urlsplit(os.environ["DOKPLOY_WEBHOOK_ORIGIN"])
-    assert parsed.scheme == allowed.scheme and parsed.netloc == allowed.netloc
-    assert parsed.scheme in ("http", "https")
-    assert parsed.path.startswith("/api/deploy/compose/") and not parsed.query
+    require(parsed.scheme == allowed.scheme and parsed.netloc == allowed.netloc, 'staging_guard')
+    require(parsed.scheme in ("http", "https"), 'staging_guard')
+    require(parsed.path.startswith("/api/deploy/compose/") and not parsed.query, 'staging_guard')
     result = {"requested_sha": ctx["source_sha"], "requested_at": now(),
         "deployment_id": None, "remote_image_id": None, "finished_at": None,
         "remote_metadata_status": "not_exposed", "healthy_at": None}
@@ -131,26 +131,26 @@ def portal_smoke(ctx, origin, password, result=None):
         req = urllib.request.Request(origin + path, method=method,
             data=None if body is None else json.dumps(body).encode(), headers=headers)
         with opener.open(req, timeout=20) as response:
-            assert response.status == expected
-            assert response.geturl() == origin + path
+            require(response.status == expected, 'staging_guard')
+            require(response.geturl() == origin + path, 'staging_guard')
             if as_json or mime:
-                assert response.headers.get_content_type() == ("application/json" if as_json else mime), "response_mime"
+                require(response.headers.get_content_type() == ("application/json" if as_json else mime), "response_mime")
             payload = response.read(limit + 1)
-            assert len(payload) <= limit, "response_size"
+            require(len(payload) <= limit, "response_size")
             if as_json: return json.loads(payload)
             return payload if raw else payload.decode()
 
     result["checkpoint"] = "public_endpoints"
-    assert request("/version", as_json=True) == {"revision": ctx["source_sha"]}
+    require(request("/version", as_json=True) == {"revision": ctx["source_sha"]}, 'staging_guard')
     request("/healthz")
     request("/login")
     result["checkpoint"] = "pre_session"
     pre = request("/api/session", as_json=True)
-    assert pre["authenticated"] is False and pre["csrfToken"]
+    require(pre["authenticated"] is False and pre["csrfToken"], 'staging_guard')
     result["checkpoint"] = "login"
     session = request("/api/session", method="POST", body={"password": password},
         csrf=pre["csrfToken"], as_json=True)
-    assert session["authenticated"] is True and session["csrfToken"]
+    require(session["authenticated"] is True and session["csrfToken"], 'staging_guard')
     try:
         result.update(health=200, login=200)
         if config["mode"] == "task1-v2":
@@ -160,11 +160,12 @@ def portal_smoke(ctx, origin, password, result=None):
             page = request("/orders")
             data = request("/api/print/v1/orders", as_json=True)
             fixture_ids = ["6b8337b0-4dbc-4c1f-8644-9691aa494c21"]
-            assert sorted(item["id"] for item in data["items"]) == fixture_ids and data["nextCursor"] is None
-            assert all("/orders/" + order_id in page for order_id in fixture_ids)
+            require(sorted(item["id"] for item in data["items"]) == fixture_ids and data["nextCursor"] is None, 'staging_guard')
+            require(all("/orders/" + order_id in page for order_id in fixture_ids), 'staging_guard')
             result.update(health=200, login=200, orders_html=200, orders_api=200, fixture_match=True)
     except Exception as error:
-        result.update(status="failure", failed_at=now(), error_type=type(error).__name__)
+        result.update(status="failure", failed_at=now(), error_type=type(error).__name__,
+            failure_reason=failure_reason(error))
         raise
     finally:
         result["logout_attempted"] = True
@@ -184,7 +185,8 @@ def smoke(ctx, origin):
         password = read("PRINT_PORTAL_PASSWORD_" + ctx["variant"].upper())
         portal_smoke(ctx, origin, password, result)
     except Exception as error:
-        result.update(status="failure", failed_at=now(), error_type=type(error).__name__)
+        result.update(status="failure", failed_at=now(), error_type=type(error).__name__,
+            failure_reason=failure_reason(error))
         raise
     finally:
         save("smoke", result)
@@ -193,12 +195,12 @@ def smoke(ctx, origin):
 if __name__ == "__main__":
     try:
         context = load("context")
-        assert context["variant"] in ("ts", "rust", "phoenix")
+        require(context["variant"] in ("ts", "rust", "phoenix"), 'staging_guard')
         public_origin = "https://staging-grafica-" + context["variant"] + ".programaincluir.org"
         if sys.argv[1] == "staging-deploy": deploy(context, public_origin)
         elif sys.argv[1] == "staging-smoke": smoke(context, public_origin)
         else: raise ValueError("unknown operation")
     except Exception as error:
         # Never stringify an HTTP exception: webhook URLs and credentials are sensitive.
-        print("TTP staging failed: " + type(error).__name__, file=sys.stderr)
+        print("TTP staging failed: " + type(error).__name__ + ": " + failure_reason(error), file=sys.stderr)
         sys.exit(1)
