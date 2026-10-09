@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pipeline import load, now, save
+from feature_smoke import validate_config, verify as verify_feature
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -114,11 +115,14 @@ def deploy(ctx, origin):
 
 def portal_smoke(ctx, origin, password, result=None):
     result = result if result is not None else {"started_at": now(), "status": "running"}
-    result["authentication_transport"] = "json_session_api"
+    config = validate_config(ctx.get("smoke_config", {"mode": "v1"}))
+    result.update(authentication_transport="json_session_api", smoke_config=config,
+        visually_verified=False)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
         urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
-    def request(path, method="GET", body=None, csrf=None, expected=200, as_json=False):
+    def request(path, method="GET", body=None, csrf=None, expected=200, as_json=False,
+                raw=False, limit=2 * 1024 * 1024, mime=None):
         headers = {"Origin": origin}
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -129,10 +133,12 @@ def portal_smoke(ctx, origin, password, result=None):
         with opener.open(req, timeout=20) as response:
             assert response.status == expected
             assert response.geturl() == origin + path
-            if as_json:
-                assert response.headers.get_content_type() == "application/json"
-                return json.load(response)
-            return response.read().decode()
+            if as_json or mime:
+                assert response.headers.get_content_type() == ("application/json" if as_json else mime), "response_mime"
+            payload = response.read(limit + 1)
+            assert len(payload) <= limit, "response_size"
+            if as_json: return json.loads(payload)
+            return payload if raw else payload.decode()
 
     result["checkpoint"] = "public_endpoints"
     assert request("/version", as_json=True) == {"revision": ctx["source_sha"]}
@@ -146,13 +152,20 @@ def portal_smoke(ctx, origin, password, result=None):
         csrf=pre["csrfToken"], as_json=True)
     assert session["authenticated"] is True and session["csrfToken"]
     try:
-        result["checkpoint"] = "orders"
-        page = request("/orders")
-        data = request("/api/print/v1/orders", as_json=True)
-        fixture_ids = ["6b8337b0-4dbc-4c1f-8644-9691aa494c21"]
-        assert sorted(item["id"] for item in data["items"]) == fixture_ids and data["nextCursor"] is None
-        assert all("/orders/" + order_id in page for order_id in fixture_ids)
-        result.update(health=200, login=200, orders_html=200, orders_api=200, fixture_match=True)
+        result.update(health=200, login=200)
+        if config["mode"] == "task1-v2":
+            verify_feature(request, origin, config, result)
+        else:
+            result["checkpoint"] = "orders"
+            page = request("/orders")
+            data = request("/api/print/v1/orders", as_json=True)
+            fixture_ids = ["6b8337b0-4dbc-4c1f-8644-9691aa494c21"]
+            assert sorted(item["id"] for item in data["items"]) == fixture_ids and data["nextCursor"] is None
+            assert all("/orders/" + order_id in page for order_id in fixture_ids)
+            result.update(health=200, login=200, orders_html=200, orders_api=200, fixture_match=True)
+    except Exception as error:
+        result.update(status="failure", failed_at=now(), error_type=type(error).__name__)
+        raise
     finally:
         result["logout_attempted"] = True
         request("/api/session", method="DELETE", csrf=session["csrfToken"], expected=204)
