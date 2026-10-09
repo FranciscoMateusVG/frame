@@ -1,12 +1,12 @@
 import type { MonthlyClose } from '../domain/monthly-close.js';
-import type { Order, OrderPage, OrderStatus } from '../domain/print-order.js';
+import type { Batch, BatchPage, BatchStatus } from '../domain/print-batch.js';
 
 /** Path prefix of the service API on the Incluir origin. */
-export const PRINT_API_PREFIX = '/api/print-portal/v1';
+export const PRINT_API_PREFIX = '/api/print-portal/v2';
 
 /**
- * PrintApi — the port to the Incluir print-portal service API
- * (`/api/print-portal/v1`, spec §4.3, frozen schema print-portal-v1).
+ * PrintApi — the port to the Incluir print-portal batch service API
+ * (`/api/print-portal/v2`, frozen schema print-portal-v2).
  *
  * The real adapter holds the service token; nothing here ever receives a
  * token, a URL or a host from the caller. Every method either resolves with
@@ -18,25 +18,23 @@ export const PRINT_API_PREFIX = '/api/print-portal/v1';
  *    a bad or missing service token).
  */
 export interface PrintApi {
-  listOrders(query: ListOrdersQuery): Promise<OrderPage>;
-  getOrder(orderId: string): Promise<Tagged<Order>>;
-  downloadOrderFile(orderId: string, fileId: string): Promise<Download>;
-  downloadQuoteFile(orderId: string, quoteId: string): Promise<Download>;
-  markCollected(
-    orderId: string,
-    input: { readonly revision: number },
-    pre: Preconditions,
-  ): Promise<CommandResult<Order>>;
+  listBatches(query: ListBatchesQuery): Promise<BatchPage>;
+  /** The open batch, or null (none, or a collected…printed batch is active). */
+  getOpenBatch(): Promise<Tagged<Batch> | null>;
+  getBatch(batchId: string): Promise<Tagged<Batch>>;
+  downloadBatchFile(batchId: string, orderId: string, fileId: string): Promise<Download>;
+  downloadQuoteFile(batchId: string, quoteId: string): Promise<Download>;
+  markCollected(batchId: string, pre: Preconditions): Promise<CommandResult<Batch>>;
   submitQuote(
-    orderId: string,
-    input: { readonly amountCents: number; readonly orderRevision: number; readonly file: Upload },
+    batchId: string,
+    input: { readonly amountCents: number; readonly file: Upload },
     pre: Preconditions,
-  ): Promise<CommandResult<Order>>;
+  ): Promise<CommandResult<Batch>>;
   markPrinted(
-    orderId: string,
-    input: { readonly revision: number; readonly quoteId: string },
+    batchId: string,
+    input: { readonly quoteId: string },
     pre: Preconditions,
-  ): Promise<CommandResult<Order>>;
+  ): Promise<CommandResult<Batch>>;
   getMonthlyClose(competence: string): Promise<Tagged<MonthlyClose>>;
   submitInvoice(
     competence: string,
@@ -46,8 +44,8 @@ export interface PrintApi {
   downloadInvoice(competence: string): Promise<Download>;
 }
 
-export interface ListOrdersQuery {
-  readonly status?: OrderStatus;
+export interface ListBatchesQuery {
+  readonly status?: BatchStatus;
   readonly limit: number;
   readonly cursor?: string;
 }

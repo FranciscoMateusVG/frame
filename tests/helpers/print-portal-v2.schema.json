@@ -1,8 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://programaincluir.org/contracts/print-portal-v1.schema.json",
-  "title": "Incluir print-portal service API v1 (/api/print-portal/v1)",
-  "description": "Frozen response contract. Money in integer BRL cents; instants UTC RFC3339; ids UUID. Generated from apps/hono-app/src/use-cases/print-orders/print-portal-contract.ts.",
+  "$id": "https://programaincluir.org/contracts/print-portal-v2.schema.json",
+  "title": "Incluir print-portal v2 batch contract",
   "$defs": {
     "File": {
       "type": "object",
@@ -76,7 +75,67 @@
       ],
       "additionalProperties": false
     },
-    "Quote": {
+    "BatchItem": {
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "previouslyCancelledIn": {
+          "type": "string",
+          "pattern": "^LOT-\\d{4,}$"
+        },
+        "reference": {
+          "type": "string",
+          "pattern": "^IMP-\\d{4,}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PrintJob"
+          }
+        },
+        "generalInstructions": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/File"
+              }
+            }
+          },
+          "required": [
+            "text",
+            "files"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "orderId",
+        "reference",
+        "title",
+        "revision",
+        "jobs"
+      ],
+      "additionalProperties": false
+    },
+    "BatchQuote": {
       "type": "object",
       "properties": {
         "id": {
@@ -85,11 +144,6 @@
           "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
         },
         "revision": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
-        },
-        "orderRevision": {
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
@@ -145,7 +199,6 @@
       "required": [
         "id",
         "revision",
-        "orderRevision",
         "amountCents",
         "currency",
         "document",
@@ -156,7 +209,7 @@
       ],
       "additionalProperties": false
     },
-    "OrderSummary": {
+    "BatchSummary": {
       "type": "object",
       "properties": {
         "id": {
@@ -166,33 +219,30 @@
         },
         "reference": {
           "type": "string",
-          "pattern": "^IMP-\\d{4,}$"
+          "pattern": "^LOT-\\d{4,}$"
         },
-        "title": {
+        "status": {
           "type": "string",
-          "minLength": 1
-        },
-        "revision": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+          "enum": [
+            "open",
+            "files_collected",
+            "quote_pending",
+            "quote_rejected",
+            "quote_approved",
+            "printed",
+            "received",
+            "cancelled"
+          ]
         },
         "version": {
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
         },
-        "status": {
-          "type": "string",
-          "enum": [
-            "ready",
-            "files_collected",
-            "quote_pending",
-            "quote_rejected",
-            "quote_approved",
-            "printed",
-            "cancelled"
-          ]
+        "itemCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "createdAt": {
           "type": "string",
@@ -212,6 +262,18 @@
           ]
         },
         "printedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receivedAt": {
           "anyOf": [
             {
               "type": "string",
@@ -239,18 +301,18 @@
       "required": [
         "id",
         "reference",
-        "title",
-        "revision",
-        "version",
         "status",
+        "version",
+        "itemCount",
         "createdAt",
         "collectedAt",
         "printedAt",
+        "receivedAt",
         "approvedAmountCents"
       ],
       "additionalProperties": false
     },
-    "Order": {
+    "Batch": {
       "type": "object",
       "properties": {
         "id": {
@@ -260,33 +322,30 @@
         },
         "reference": {
           "type": "string",
-          "pattern": "^IMP-\\d{4,}$"
+          "pattern": "^LOT-\\d{4,}$"
         },
-        "title": {
+        "status": {
           "type": "string",
-          "minLength": 1
-        },
-        "revision": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+          "enum": [
+            "open",
+            "files_collected",
+            "quote_pending",
+            "quote_rejected",
+            "quote_approved",
+            "printed",
+            "received",
+            "cancelled"
+          ]
         },
         "version": {
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
         },
-        "status": {
-          "type": "string",
-          "enum": [
-            "ready",
-            "files_collected",
-            "quote_pending",
-            "quote_rejected",
-            "quote_approved",
-            "printed",
-            "cancelled"
-          ]
+        "itemCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "createdAt": {
           "type": "string",
@@ -317,6 +376,18 @@
             }
           ]
         },
+        "receivedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "approvedAmountCents": {
           "anyOf": [
             {
@@ -329,16 +400,16 @@
             }
           ]
         },
-        "jobs": {
+        "items": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/PrintJob"
+            "$ref": "#/$defs/BatchItem"
           }
         },
         "currentQuote": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Quote"
+              "$ref": "#/$defs/BatchQuote"
             },
             {
               "type": "null"
@@ -354,125 +425,63 @@
               "type": "null"
             }
           ]
-        },
-        "generalInstructions": {
-          "type": "object",
-          "properties": {
-            "text": {
-              "type": "string"
-            },
-            "files": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/File"
-              },
-              "minItems": 1
-            }
-          },
-          "required": [
-            "text",
-            "files"
-          ],
-          "additionalProperties": false
         }
       },
       "required": [
         "id",
         "reference",
-        "title",
-        "revision",
-        "version",
         "status",
+        "version",
+        "itemCount",
         "createdAt",
         "collectedAt",
         "printedAt",
+        "receivedAt",
         "approvedAmountCents",
-        "jobs",
+        "items",
         "currentQuote",
         "cancellationReason"
       ],
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "required": [
-              "generalInstructions"
-            ]
-          },
-          "then": {
-            "properties": {
-              "jobs": {
-                "maxItems": 0
-              }
-            }
-          },
-          "else": {
-            "properties": {
-              "jobs": {
-                "minItems": 1
-              }
-            }
-          }
-        }
-      ]
+      "additionalProperties": false
     },
-    "Error": {
+    "BatchResponse": {
       "type": "object",
       "properties": {
-        "error": {
-          "type": "object",
-          "properties": {
-            "code": {
-              "type": "string",
-              "enum": [
-                "INVALID_REQUEST",
-                "INVALID_CURSOR",
-                "INVALID_COMPETENCE",
-                "UNAUTHORIZED",
-                "NOT_FOUND",
-                "METHOD_NOT_ALLOWED",
-                "INVALID_STATE",
-                "IDEMPOTENCY_CONFLICT",
-                "OPERATION_IN_PROGRESS",
-                "PERIOD_OPEN",
-                "EMPTY_CLOSE",
-                "VERSION_MISMATCH",
-                "FILE_TOO_LARGE",
-                "UNSUPPORTED_MEDIA_TYPE",
-                "PRECONDITION_REQUIRED",
-                "RATE_LIMITED",
-                "INTERNAL",
-                "NOT_CONFIGURED",
-                "UPSTREAM_UNAVAILABLE"
-              ]
-            },
-            "message": {
-              "type": "string"
-            },
-            "requestId": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "code",
-            "message",
-            "requestId"
-          ],
-          "additionalProperties": false
+        "batch": {
+          "$ref": "#/$defs/Batch"
         }
       },
       "required": [
-        "error"
+        "batch"
       ],
       "additionalProperties": false
     },
-    "OrderListResponse": {
+    "OpenBatchResponse": {
+      "type": "object",
+      "properties": {
+        "batch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Batch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "batch"
+      ],
+      "additionalProperties": false
+    },
+    "BatchListResponse": {
       "type": "object",
       "properties": {
         "items": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/OrderSummary"
+            "$ref": "#/$defs/BatchSummary"
           }
         },
         "nextCursor": {
@@ -492,56 +501,93 @@
       ],
       "additionalProperties": false
     },
-    "OrderResponse": {
-      "type": "object",
-      "properties": {
-        "order": {
-          "$ref": "#/$defs/Order"
+    "BatchCloseItem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "reference": {
+              "type": "string"
+            },
+            "quoteId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "amountCents": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "printedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            },
+            "kind": {
+              "type": "string",
+              "const": "batch"
+            },
+            "batchId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          "required": [
+            "reference",
+            "quoteId",
+            "amountCents",
+            "printedAt",
+            "kind",
+            "batchId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reference": {
+              "type": "string"
+            },
+            "quoteId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "amountCents": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "printedAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+            },
+            "kind": {
+              "type": "string",
+              "const": "legacy_order"
+            },
+            "orderId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          "required": [
+            "reference",
+            "quoteId",
+            "amountCents",
+            "printedAt",
+            "kind",
+            "orderId"
+          ],
+          "additionalProperties": false
         }
-      },
-      "required": [
-        "order"
-      ],
-      "additionalProperties": false
+      ]
     },
-    "CloseItem": {
-      "type": "object",
-      "properties": {
-        "orderId": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-        },
-        "reference": {
-          "type": "string",
-          "pattern": "^IMP-\\d{4,}$"
-        },
-        "quoteId": {
-          "type": "string",
-          "format": "uuid",
-          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-        },
-        "amountCents": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 2147483647
-        },
-        "printedAt": {
-          "type": "string",
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
-        }
-      },
-      "required": [
-        "orderId",
-        "reference",
-        "quoteId",
-        "amountCents",
-        "printedAt"
-      ],
-      "additionalProperties": false
-    },
-    "Close": {
+    "BatchClose": {
       "type": "object",
       "properties": {
         "id": {
@@ -580,7 +626,7 @@
         "items": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/CloseItem"
+            "$ref": "#/$defs/BatchCloseItem"
           }
         },
         "expectedTotalCents": {
@@ -661,15 +707,69 @@
       ],
       "additionalProperties": false
     },
-    "CloseResponse": {
+    "BatchCloseResponse": {
       "type": "object",
       "properties": {
         "close": {
-          "$ref": "#/$defs/Close"
+          "$ref": "#/$defs/BatchClose"
         }
       },
       "required": [
         "close"
+      ],
+      "additionalProperties": false
+    },
+    "BatchError": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "INVALID_REQUEST",
+                "INVALID_CURSOR",
+                "INVALID_COMPETENCE",
+                "UNAUTHORIZED",
+                "NOT_FOUND",
+                "METHOD_NOT_ALLOWED",
+                "INVALID_STATE",
+                "IDEMPOTENCY_CONFLICT",
+                "OPERATION_IN_PROGRESS",
+                "PERIOD_OPEN",
+                "EMPTY_CLOSE",
+                "VERSION_MISMATCH",
+                "FILE_TOO_LARGE",
+                "UNSUPPORTED_MEDIA_TYPE",
+                "PRECONDITION_REQUIRED",
+                "RATE_LIMITED",
+                "INTERNAL",
+                "NOT_CONFIGURED",
+                "UPSTREAM_UNAVAILABLE",
+                "BATCH_NOT_ACTIVE",
+                "BATCH_WORKFLOW_REQUIRED",
+                "EMPTY_BATCH",
+                "TOTAL_MISMATCH"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "error"
       ],
       "additionalProperties": false
     }

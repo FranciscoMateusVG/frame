@@ -10,7 +10,7 @@ import { UpstreamUnavailableError } from '../../src/errors/upstream-unavailable.
 import { type FakeUpstream, startFakeUpstream } from '../helpers/fake-print-upstream.js';
 import { createTestObservability } from '../helpers/observability.js';
 import { describePrintApiConformance } from '../helpers/print-api.conformance.js';
-import { seedTwoFileOrder } from '../helpers/print-fixtures.js';
+import { seedTwoFileRequest } from '../helpers/print-fixtures.js';
 
 const obs = createTestObservability();
 const upstreams: FakeUpstream[] = [];
@@ -58,12 +58,12 @@ describe('PrintApiHttp — failure modes map to UpstreamUnavailableError', () =>
 
   it('timeout', async () => {
     upstream.behaviour.delayMs = 1_000;
-    await unavailable(api.listOrders({ limit: 1 }));
+    await unavailable(api.listBatches({ limit: 1 }));
   });
 
   it('5xx with a non-contract body', async () => {
     upstream.behaviour.failWith = 502;
-    await unavailable(api.listOrders({ limit: 1 }));
+    await unavailable(api.listBatches({ limit: 1 }));
   });
 
   it('503 NOT_CONFIGURED-style answer', async () => {
@@ -74,42 +74,40 @@ describe('PrintApiHttp — failure modes map to UpstreamUnavailableError', () =>
   it('redirects are never followed (the bearer stays home)', async () => {
     const trap = await startFakeUpstream();
     upstreams.push(trap);
-    upstream.behaviour.redirectTo = `${trap.origin}/api/print-portal/v1/orders`;
-    await unavailable(api.listOrders({ limit: 1 }));
+    upstream.behaviour.redirectTo = `${trap.origin}/api/print-portal/v2/batches`;
+    await unavailable(api.listBatches({ limit: 1 }));
     expect(trap.seenHeaders).toHaveLength(0);
   });
 
   it('a body with a field outside the frozen contract', async () => {
-    seedTwoFileOrder(upstream.api);
+    seedTwoFileRequest(upstream.api);
     upstream.behaviour.leakField = true;
-    await unavailable(api.listOrders({ limit: 1 }));
+    await unavailable(api.getOpenBatch());
+    await unavailable(api.listBatches({ limit: 1 }));
   });
 
   it('an oversized JSON answer is refused without buffering it all', async () => {
     upstream.behaviour.hugeBodyBytes = 3 * 1024 * 1024;
-    await unavailable(api.listOrders({ limit: 1 }));
+    await unavailable(api.listBatches({ limit: 1 }));
   });
 
   it('a refused service token (401) is unavailability, not a login problem', async () => {
     const wrong = new PrintApiHttp({ origin: upstream.origin, token: `x${upstream.token}` });
-    await unavailable(wrong.listOrders({ limit: 1 }));
+    await unavailable(wrong.listBatches({ limit: 1 }));
   });
 
   it('connection refused', async () => {
     const dead = await startFakeUpstream();
     await dead.close();
     const api2 = new PrintApiHttp({ origin: dead.origin, token: dead.token });
-    await unavailable(api2.listOrders({ limit: 1 }));
+    await unavailable(api2.listBatches({ limit: 1 }));
   });
 
   it('sends only the bearer and contract headers upstream', async () => {
-    const order = seedTwoFileOrder(upstream.api);
-    const { etag } = await api.getOrder(order.id);
-    await api.markCollected(
-      order.id,
-      { revision: 1 },
-      { ifMatch: etag, idempotencyKey: randomUUID() },
-    );
+    seedTwoFileRequest(upstream.api);
+    const open = await api.getOpenBatch();
+    const etag = open?.etag ?? '';
+    await api.markCollected(open?.value.id ?? '', { ifMatch: etag, idempotencyKey: randomUUID() });
     const last = upstream.seenHeaders.at(-1);
     expect(last?.get('authorization')).toBe(`Bearer ${upstream.token}`);
     expect(last?.get('cookie')).toBeNull();

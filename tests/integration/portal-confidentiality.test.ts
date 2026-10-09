@@ -50,7 +50,7 @@ describe('confidentiality of telemetry and errors', () => {
       printApi: new PrintApiHttp({ origin: upstream.origin, token: upstream.token }),
       observability: obs.observability,
     });
-    const order = upstream.api.seedOrder({
+    const item = upstream.api.publishRequest({
       jobs: [
         {
           title: 'Apostila',
@@ -80,20 +80,22 @@ describe('confidentiality of telemetry and errors', () => {
     const csrf = browser.csrf ?? '';
     const sessionId = browser.cookies.get('__Host-print_session') ?? '';
 
-    // Journey with downloads and an upload.
-    const detail = await browser.get(`/api/print/v1/orders/${order.id}`);
-    const fileId = order.jobs[0]?.file.id ?? '';
-    await (await browser.get(`/api/print/v1/orders/${order.id}/files/${fileId}`)).arrayBuffer();
+    // Journey: the batch home, downloads and an upload.
+    expect((await browser.get('/')).status).toBe(200);
+    const detail = await browser.get('/api/print/v2/batches/open');
+    const batchId = ((await detail.clone().json()) as { batch: { id: string } }).batch.id;
+    const api = `/api/print/v2/batches/${batchId}`;
+    const fileId = item.jobs[0]?.file.id ?? '';
+    await (await browser.get(`${api}/orders/${item.orderId}/files/${fileId}`)).arrayBuffer();
     const collected = await browser.post(
-      `/api/print/v1/orders/${order.id}/collected`,
-      { revision: 1 },
+      `${api}/collected`,
+      {},
       { 'If-Match': detail.headers.get('etag') ?? '', 'Idempotency-Key': randomUUID() },
     );
     const form = new FormData();
     form.append('file', new File([PDF_BYTES], QUOTE_NAME));
     form.append('amountCents', '45900');
-    form.append('orderRevision', '1');
-    await browser.request('POST', `/api/print/v1/orders/${order.id}/quotes`, {
+    await browser.request('POST', `${api}/quotes`, {
       body: form,
       headers: {
         'X-CSRF-Token': csrf,
@@ -103,28 +105,28 @@ describe('confidentiality of telemetry and errors', () => {
     });
 
     // Failures: 400/401/403/404/405/412/428/503.
+    await keep(await browser.post(`${api}/collected`, { revision: 'MARKER-BAD' }));
+    await keep(await h.client().get('/api/print/v2/batches'));
     await keep(
-      await browser.post(`/api/print/v1/orders/${order.id}/collected`, { revision: 'MARKER-BAD' }),
-    );
-    await keep(await h.client().get('/api/print/v1/orders'));
-    await keep(
-      await browser.request('POST', `/api/print/v1/orders/${order.id}/printed`, {
+      await browser.request('POST', `${api}/printed`, {
         json: {},
         headers: { 'X-CSRF-Token': 'MARKER-CSRF-BAD' },
       }),
     );
-    await keep(await browser.get(`/api/print/v1/orders/${randomUUID()}`));
-    await keep(await browser.request('PUT', `/api/print/v1/orders/${order.id}`));
+    await keep(await browser.get(`/api/print/v2/batches/${randomUUID()}`));
+    await keep(await browser.request('PUT', api));
     await keep(
       await browser.post(
-        `/api/print/v1/orders/${order.id}/collected`,
-        { revision: 1 },
+        `${api}/collected`,
+        {},
         { 'If-Match': '"stale:0"', 'Idempotency-Key': randomUUID() },
       ),
     );
-    await keep(await browser.post(`/api/print/v1/orders/${order.id}/collected`, { revision: 1 }));
+    await keep(await browser.post(`${api}/collected`, {}));
     upstream.behaviour.failWith = 503;
-    await keep(await browser.get('/api/print/v1/orders'));
+    await keep(await browser.get('/api/print/v2/batches'));
+    // The HTML page carries the CSRF token in its forms by design: spans/logs only.
+    expect((await browser.get('/')).status).toBe(503);
     upstream.behaviour.failWith = 0;
 
     const spans = obs.getSpans();
@@ -152,15 +154,16 @@ describe('confidentiality of telemetry and errors', () => {
     for (const name of [
       'logIn',
       'authenticateSession',
-      'getOrder',
-      'downloadOrderFile',
-      'collectOrderFiles',
+      'getCurrentBatch',
+      'getOpenBatch',
+      'downloadBatchFile',
+      'collectBatchFiles',
       'submitQuote',
       'print_api.submitQuote',
     ]) {
       expect(names.has(name), name).toBe(true);
     }
-    const useCase = spans.find((s) => s.name === 'collectOrderFiles');
+    const useCase = spans.find((s) => s.name === 'collectBatchFiles');
     const adapter = spans.find(
       (s) => s.name === 'print_api.markCollected' && s.attributes['server.address'] !== 'memory',
     );
@@ -199,16 +202,16 @@ describe('confidentiality of telemetry and errors', () => {
         .getSetCookie()
         .map((c) => c.split(';')[0])
         .join('; ');
-      const res = await fetch(`${base}/api/print/v1/orders`, { headers: { Cookie: cookie } });
+      const res = await fetch(`${base}/api/print/v2/batches`, { headers: { Cookie: cookie } });
       expect(res.status).toBe(500);
       const body = await res.text();
       expect(body).not.toContain(MARKER);
-      const page = await fetch(`${base}/orders`, { headers: { Cookie: cookie } });
+      const page = await fetch(`${base}/`, { headers: { Cookie: cookie } });
       expect(page.status).toBe(500);
       expect(await page.text()).not.toContain(MARKER);
 
       const spans = obs.getSpans();
-      const failed = spans.find((s) => s.name === 'listOrders');
+      const failed = spans.find((s) => s.name === 'listBatches');
       expect(failed?.status.code).toBe(2);
       expect(failed?.attributes['error.type']).toBe('Error');
       expect(spanText(spans)).not.toContain(MARKER);

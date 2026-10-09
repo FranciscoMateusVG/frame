@@ -19,7 +19,18 @@ import {
   isSessionExpired,
   sessionExpiresAt,
 } from '../../src/domain/portal-session.js';
-import { availableAction, isOrderStatus, ORDER_STATUSES } from '../../src/domain/print-order.js';
+import {
+  availableAction,
+  BATCH_PROGRESS_STEPS,
+  BATCH_STATUSES,
+  fileCount,
+  isBatchStatus,
+  itemFiles,
+  progressStep,
+  totalCopies,
+  waitingMessage,
+} from '../../src/domain/print-batch.js';
+import { fixtureBatch } from '../helpers/print-v2-fixture.js';
 
 describe('money', () => {
   it.each([
@@ -98,8 +109,9 @@ describe('monthly close', () => {
       periodClosed: true,
       items: [
         {
-          orderId: 'o',
-          reference: 'IMP-0001',
+          kind: 'batch',
+          batchId: 'b',
+          reference: 'LOT-0001',
           quoteId: 'q',
           amountCents: 1,
           printedAt: '2026-09-01T00:00:00Z',
@@ -120,19 +132,52 @@ describe('monthly close', () => {
   });
 });
 
-describe('order actions', () => {
-  it('maps status to the single supplier action', () => {
+describe('batch rules', () => {
+  it('maps status to the single supplier action or a waiting message, never both', () => {
     const approved = { decision: 'approved' } as never;
-    expect(availableAction({ status: 'ready', currentQuote: null })).toBe('collect');
-    expect(availableAction({ status: 'files_collected', currentQuote: null })).toBe('quote');
-    expect(availableAction({ status: 'quote_rejected', currentQuote: null })).toBe('quote');
-    expect(availableAction({ status: 'quote_approved', currentQuote: approved })).toBe('print');
+    expect(availableAction({ status: 'open', currentQuote: null })).toBe('collect');
+    expect(availableAction({ status: 'files_collected', currentQuote: null })).toBe('upload-quote');
+    expect(availableAction({ status: 'quote_rejected', currentQuote: null })).toBe('upload-quote');
+    expect(availableAction({ status: 'quote_approved', currentQuote: approved })).toBe(
+      'mark-printed',
+    );
     expect(availableAction({ status: 'quote_approved', currentQuote: null })).toBeNull();
-    for (const s of ['quote_pending', 'printed', 'cancelled'] as const) {
+    for (const s of ['quote_pending', 'printed', 'received', 'cancelled'] as const) {
       expect(availableAction({ status: s, currentQuote: null })).toBeNull();
     }
-    expect(ORDER_STATUSES.every(isOrderStatus)).toBe(true);
-    expect(isOrderStatus('needs_review')).toBe(false);
+    expect(waitingMessage('quote_pending')).toBe('Aguardando aprovação do Financeiro');
+    expect(waitingMessage('printed')).toBe('Aguardando recebimento');
+    for (const s of BATCH_STATUSES) {
+      if (availableAction({ status: s, currentQuote: approved })) {
+        expect(waitingMessage(s)).toBeNull();
+      }
+    }
+    expect(BATCH_STATUSES.every(isBatchStatus)).toBe(true);
+    expect(isBatchStatus('ready')).toBe(false);
+  });
+
+  it('progress: one step per stage; history-only states have none', () => {
+    expect(BATCH_PROGRESS_STEPS).toHaveLength(5);
+    expect(progressStep('open')).toBe(0);
+    expect(progressStep('files_collected')).toBe(1);
+    expect(progressStep('quote_pending')).toBe(2);
+    expect(progressStep('quote_rejected')).toBe(2);
+    expect(progressStep('quote_approved')).toBe(3);
+    expect(progressStep('printed')).toBe(4);
+    expect(progressStep('received')).toBe(-1);
+    expect(progressStep('cancelled')).toBe(-1);
+  });
+
+  it('files: jobs first then residual files; copies only from paired jobs', () => {
+    const batch = fixtureBatch('open');
+    const item = batch.items[0];
+    expect(item && itemFiles(item).map((f) => [f.file.id, f.job?.copies ?? null])).toEqual([
+      ['00000000-0000-4000-8000-00000000000b', 24],
+      ['00000000-0000-4000-8000-00000000000c', 12],
+      ['00000000-0000-4000-8000-00000000000d', null],
+    ]);
+    expect(fileCount(batch)).toBe(3);
+    expect(totalCopies(batch)).toBe(36);
   });
 });
 

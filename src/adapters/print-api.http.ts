@@ -1,20 +1,21 @@
 import { type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import type { z } from 'zod';
 import type { MonthlyClose } from '../domain/monthly-close.js';
-import type { Order, OrderPage } from '../domain/print-order.js';
+import type { Batch, BatchPage } from '../domain/print-batch.js';
 import { UpstreamRejectedError } from '../errors/upstream-rejected.error.js';
 import { UpstreamUnavailableError } from '../errors/upstream-unavailable.error.js';
 import { markSpanFailed } from '../observability/span-errors.js';
 import {
+  BatchListResponseSchema,
+  BatchResponseSchema,
   CloseResponseSchema,
   ErrorSchema,
-  OrderListResponseSchema,
-  OrderResponseSchema,
+  OpenBatchResponseSchema,
 } from './print-api.contract.js';
 import {
   type CommandResult,
   type Download,
-  type ListOrdersQuery,
+  type ListBatchesQuery,
   PRINT_API_PREFIX,
   type Preconditions,
   type PrintApi,
@@ -70,79 +71,87 @@ export class PrintApiHttp implements PrintApi {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
-  listOrders(query: ListOrdersQuery): Promise<OrderPage> {
+  listBatches(query: ListBatchesQuery): Promise<BatchPage> {
     const params = new URLSearchParams({ limit: String(query.limit) });
     if (query.status) params.set('status', query.status);
     if (query.cursor) params.set('cursor', query.cursor);
-    return this.span('listOrders', 'GET', '/orders', async (span) => {
-      const res = await this.send('GET', `/orders?${params}`, span, {});
-      return (await this.json(res, OrderListResponseSchema)) as OrderPage;
+    return this.span('listBatches', 'GET', '/batches', async (span) => {
+      const res = await this.send('GET', `/batches?${params}`, span, {});
+      return (await this.json(res, BatchListResponseSchema)) as BatchPage;
     });
   }
 
-  getOrder(orderId: string): Promise<Tagged<Order>> {
-    return this.span('getOrder', 'GET', '/orders/:id', async (span) => {
-      const res = await this.send('GET', `/orders/${seg(orderId)}`, span, {});
-      const body = await this.json(res, OrderResponseSchema);
-      return { value: body.order as Order, etag: this.etag(res) };
+  getOpenBatch(): Promise<Tagged<Batch> | null> {
+    return this.span('getOpenBatch', 'GET', '/batches/open', async (span) => {
+      const res = await this.send('GET', '/batches/open', span, {});
+      const body = await this.json(res, OpenBatchResponseSchema);
+      // ETag only when nonnull.
+      return body.batch === null ? null : { value: body.batch as Batch, etag: this.etag(res) };
     });
   }
 
-  downloadOrderFile(orderId: string, fileId: string): Promise<Download> {
-    return this.span('downloadOrderFile', 'GET', '/orders/:id/files/:fileId', (span) =>
-      this.download(`/orders/${seg(orderId)}/files/${seg(fileId)}`, span),
+  getBatch(batchId: string): Promise<Tagged<Batch>> {
+    return this.span('getBatch', 'GET', '/batches/:id', async (span) => {
+      const res = await this.send('GET', `/batches/${seg(batchId)}`, span, {});
+      const body = await this.json(res, BatchResponseSchema);
+      return { value: body.batch as Batch, etag: this.etag(res) };
+    });
+  }
+
+  downloadBatchFile(batchId: string, orderId: string, fileId: string): Promise<Download> {
+    return this.span(
+      'downloadBatchFile',
+      'GET',
+      '/batches/:id/orders/:orderId/files/:fileId',
+      (span) =>
+        this.download(`/batches/${seg(batchId)}/orders/${seg(orderId)}/files/${seg(fileId)}`, span),
     );
   }
 
-  downloadQuoteFile(orderId: string, quoteId: string): Promise<Download> {
-    return this.span('downloadQuoteFile', 'GET', '/orders/:id/quotes/:quoteId/file', (span) =>
-      this.download(`/orders/${seg(orderId)}/quotes/${seg(quoteId)}/file`, span),
+  downloadQuoteFile(batchId: string, quoteId: string): Promise<Download> {
+    return this.span('downloadQuoteFile', 'GET', '/batches/:id/quotes/:quoteId/file', (span) =>
+      this.download(`/batches/${seg(batchId)}/quotes/${seg(quoteId)}/file`, span),
     );
   }
 
-  markCollected(
-    orderId: string,
-    input: { readonly revision: number },
-    pre: Preconditions,
-  ): Promise<CommandResult<Order>> {
-    return this.span('markCollected', 'POST', '/orders/:id/collected', async (span) => {
-      const res = await this.send('POST', `/orders/${seg(orderId)}/collected`, span, {
+  markCollected(batchId: string, pre: Preconditions): Promise<CommandResult<Batch>> {
+    return this.span('markCollected', 'POST', '/batches/:id/collected', async (span) => {
+      const res = await this.send('POST', `/batches/${seg(batchId)}/collected`, span, {
         pre,
-        json: { revision: input.revision },
+        json: {},
       });
-      return this.command(res, OrderResponseSchema, (b) => b.order as Order);
+      return this.command(res, BatchResponseSchema, (b) => b.batch as Batch);
     });
   }
 
   submitQuote(
-    orderId: string,
-    input: { readonly amountCents: number; readonly orderRevision: number; readonly file: Upload },
+    batchId: string,
+    input: { readonly amountCents: number; readonly file: Upload },
     pre: Preconditions,
-  ): Promise<CommandResult<Order>> {
-    return this.span('submitQuote', 'POST', '/orders/:id/quotes', async (span) => {
+  ): Promise<CommandResult<Batch>> {
+    return this.span('submitQuote', 'POST', '/batches/:id/quotes', async (span) => {
       const form = new FormData();
       form.set('file', new Blob([toArrayBuffer(input.file.bytes)]), input.file.filename);
       form.set('amountCents', String(input.amountCents));
-      form.set('orderRevision', String(input.orderRevision));
-      const res = await this.send('POST', `/orders/${seg(orderId)}/quotes`, span, {
+      const res = await this.send('POST', `/batches/${seg(batchId)}/quotes`, span, {
         pre,
         form,
       });
-      return this.command(res, OrderResponseSchema, (b) => b.order as Order);
+      return this.command(res, BatchResponseSchema, (b) => b.batch as Batch);
     });
   }
 
   markPrinted(
-    orderId: string,
-    input: { readonly revision: number; readonly quoteId: string },
+    batchId: string,
+    input: { readonly quoteId: string },
     pre: Preconditions,
-  ): Promise<CommandResult<Order>> {
-    return this.span('markPrinted', 'POST', '/orders/:id/printed', async (span) => {
-      const res = await this.send('POST', `/orders/${seg(orderId)}/printed`, span, {
+  ): Promise<CommandResult<Batch>> {
+    return this.span('markPrinted', 'POST', '/batches/:id/printed', async (span) => {
+      const res = await this.send('POST', `/batches/${seg(batchId)}/printed`, span, {
         pre,
-        json: { revision: input.revision, quoteId: input.quoteId },
+        json: { quoteId: input.quoteId },
       });
-      return this.command(res, OrderResponseSchema, (b) => b.order as Order);
+      return this.command(res, BatchResponseSchema, (b) => b.batch as Batch);
     });
   }
 
@@ -330,7 +339,7 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-/** Largest JSON answer accepted from upstream (a full order is far below this). */
+/** Largest JSON answer accepted from upstream (a full batch is far below this). */
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 
 /** Read and parse a JSON body, refusing more than MAX_JSON_BYTES without buffering it. */

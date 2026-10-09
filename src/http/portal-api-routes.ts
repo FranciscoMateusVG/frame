@@ -1,8 +1,8 @@
 /**
  * Portal JSON API (spec §4.5):
  *   GET/POST/DELETE /api/session
- *   /api/print/v1/*  — the ten service routes of §4.3, authenticated by the
- *                      session cookie instead of the bearer.
+ *   /api/print/v2/*  — the service routes of the frozen v2 batch contract,
+ *                      authenticated by the session cookie instead of the bearer.
  *
  * The BFF is a fixed router, not a proxy: every route is spelled out, ids
  * are re-encoded as path segments by the adapter, bodies are re-validated
@@ -14,19 +14,20 @@ import { z } from 'zod';
 import type { Preconditions, Upload } from '../adapters/print-api.js';
 import { parseCentsString } from '../domain/money.js';
 import { isValidCompetence } from '../domain/monthly-close.js';
-import { ORDER_STATUSES } from '../domain/print-order.js';
+import { BATCH_STATUSES } from '../domain/print-batch.js';
 import { InvalidRequestError } from '../errors/invalid-request.error.js';
 import { authenticateSession } from '../use-cases/authenticate-session.js';
-import { collectOrderFiles } from '../use-cases/collect-order-files.js';
+import { collectBatchFiles } from '../use-cases/collect-batch-files.js';
+import { downloadBatchFile } from '../use-cases/download-batch-file.js';
 import { downloadInvoice } from '../use-cases/download-invoice.js';
-import { downloadOrderFile } from '../use-cases/download-order-file.js';
 import { downloadQuoteFile } from '../use-cases/download-quote-file.js';
+import { getBatch } from '../use-cases/get-batch.js';
 import { getMonthlyClose } from '../use-cases/get-monthly-close.js';
-import { getOrder } from '../use-cases/get-order.js';
-import { listOrders } from '../use-cases/list-orders.js';
+import { getOpenBatch } from '../use-cases/get-open-batch.js';
+import { listBatches } from '../use-cases/list-batches.js';
 import { logIn } from '../use-cases/log-in.js';
 import { logOut } from '../use-cases/log-out.js';
-import { markOrderPrinted } from '../use-cases/mark-order-printed.js';
+import { markBatchPrinted } from '../use-cases/mark-batch-printed.js';
 import { openSession } from '../use-cases/open-session.js';
 import { submitInvoice } from '../use-cases/submit-invoice.js';
 import { submitQuote } from '../use-cases/submit-quote.js';
@@ -51,15 +52,10 @@ import {
 } from './portal-http.js';
 
 const LoginBody = z.object({ password: z.string() }).strict();
-const CollectedBody = z.object({ revision: z.number().int().min(1).max(1_000_000) }).strict();
-const PrintedBody = z
-  .object({
-    revision: z.number().int().min(1).max(1_000_000),
-    quoteId: z.string().regex(/^[0-9a-fA-F-]{36}$/),
-  })
-  .strict();
+const CollectedBody = z.object({}).strict();
+const PrintedBody = z.object({ quoteId: z.string().regex(/^[0-9a-fA-F-]{36}$/) }).strict();
 const ListQuery = z.object({
-  status: z.enum(ORDER_STATUSES).optional(),
+  status: z.enum(BATCH_STATUSES).optional(),
   limit: z
     .string()
     .regex(/^[1-9][0-9]{0,2}$/)
@@ -128,7 +124,7 @@ function preconditions(c: PortalContext): Preconditions {
 
 function commandJson(
   c: PortalContext,
-  key: 'order' | 'close',
+  key: 'batch' | 'close',
   result: { value: unknown; etag: string; status: 200 | 201; replayed: boolean },
 ): Response {
   const headers: Record<string, string> = { ...NO_STORE, ETag: result.etag };
@@ -200,14 +196,14 @@ export function portalApiRoutes(deps: PortalDeps): Hono<PortalEnv> {
 
   app.all('/api/session', (c) => jsonError(c, 405, 'METHOD_NOT_ALLOWED', 'Método não permitido.'));
 
-  // ── /api/print/v1 ──
+  // ── /api/print/v2 ──
 
-  const v1 = new Hono<PortalEnv>();
-  v1.onError((error, c) => errorToJson(c, error, logger));
+  const v2 = new Hono<PortalEnv>();
+  v2.onError((error, c) => errorToJson(c, error, logger));
 
   // Every route needs a live authenticated session; POSTs also need our
   // exact Origin and the session's CSRF token.
-  v1.use('*', async (c, next) => {
+  v2.use('*', async (c, next) => {
     // The bearer lives only on the server; a browser-supplied Authorization
     // is refused, never forwarded.
     if (c.req.header('authorization') !== undefined) {
@@ -224,10 +220,10 @@ export function portalApiRoutes(deps: PortalDeps): Hono<PortalEnv> {
     await next();
   });
 
-  v1.get('/orders', async (c) => {
+  v2.get('/batches', async (c) => {
     const q = ListQuery.safeParse(c.req.query());
     if (!q.success) throw new InvalidRequestError('query');
-    const page = await listOrders(deps.print, {
+    const page = await listBatches(deps.print, {
       limit: q.data.limit ?? 20,
       ...(q.data.status ? { status: q.data.status } : {}),
       ...(q.data.cursor ? { cursor: q.data.cursor } : {}),
@@ -235,68 +231,76 @@ export function portalApiRoutes(deps: PortalDeps): Hono<PortalEnv> {
     return c.json(page, 200, NO_STORE);
   });
 
-  v1.get('/orders/:id', async (c) => {
-    const { value, etag } = await getOrder(deps.print, c.req.param('id'));
-    return c.json({ order: value }, 200, { ...NO_STORE, ETag: etag });
+  v2.get('/batches/open', async (c) => {
+    const open = await getOpenBatch(deps.print);
+    return c.json({ batch: open?.value ?? null }, 200, {
+      ...NO_STORE,
+      ...(open ? { ETag: open.etag } : {}),
+    });
   });
 
-  v1.get('/orders/:id/files/:fileId', async (c) =>
+  v2.get('/batches/:id', async (c) => {
+    const { value, etag } = await getBatch(deps.print, c.req.param('id'));
+    return c.json({ batch: value }, 200, { ...NO_STORE, ETag: etag });
+  });
+
+  v2.get('/batches/:id/orders/:orderId/files/:fileId', async (c) =>
     downloadResponse(
-      await downloadOrderFile(deps.print, {
-        orderId: c.req.param('id'),
+      await downloadBatchFile(deps.print, {
+        batchId: c.req.param('id'),
+        orderId: c.req.param('orderId'),
         fileId: c.req.param('fileId'),
       }),
     ),
   );
 
-  v1.get('/orders/:id/quotes/:quoteId/file', async (c) =>
+  v2.get('/batches/:id/quotes/:quoteId/file', async (c) =>
     downloadResponse(
       await downloadQuoteFile(deps.print, {
-        orderId: c.req.param('id'),
+        batchId: c.req.param('id'),
         quoteId: c.req.param('quoteId'),
       }),
     ),
   );
 
-  v1.post('/orders/:id/collected', async (c) => {
+  v2.post('/batches/:id/collected', async (c) => {
     const body = CollectedBody.safeParse(await readJsonObject(c));
     if (!body.success) throw new InvalidRequestError('body');
-    const result = await collectOrderFiles(
+    const result = await collectBatchFiles(
       deps.print,
-      { orderId: c.req.param('id'), revision: body.data.revision },
+      { batchId: c.req.param('id') },
       preconditions(c),
     );
-    return commandJson(c, 'order', result);
+    return commandJson(c, 'batch', result);
   });
 
-  v1.post('/orders/:id/printed', async (c) => {
+  v2.post('/batches/:id/printed', async (c) => {
     const body = PrintedBody.safeParse(await readJsonObject(c));
     if (!body.success) throw new InvalidRequestError('body');
-    const result = await markOrderPrinted(
+    const result = await markBatchPrinted(
       deps.print,
-      { orderId: c.req.param('id'), revision: body.data.revision, quoteId: body.data.quoteId },
+      { batchId: c.req.param('id'), quoteId: body.data.quoteId },
       preconditions(c),
     );
-    return commandJson(c, 'order', result);
+    return commandJson(c, 'batch', result);
   });
 
   const uploadLimit = limitBody(UPLOAD_BODY_MAX_BYTES, tooLarge);
 
-  v1.post('/orders/:id/quotes', uploadLimit, async (c) => {
-    const upload = await readUpload(c, ['amountCents', 'orderRevision']);
+  v2.post('/batches/:id/quotes', uploadLimit, async (c) => {
+    const upload = await readUpload(c, ['amountCents']);
     if (upload === 'too_large') return tooLarge(c);
     const amountCents = parseCentsString(upload.fields.amountCents ?? '');
-    const orderRevision = parseCentsString(upload.fields.orderRevision ?? '');
-    if (amountCents === null || orderRevision === null) throw new InvalidRequestError('fields');
+    if (amountCents === null) throw new InvalidRequestError('fields');
     const result = await submitQuote(
       deps.print,
-      { orderId: c.req.param('id'), orderRevision, amountCents, file: upload.file },
+      { batchId: c.req.param('id'), amountCents, file: upload.file },
       preconditions(c),
     );
-    return commandJson(c, 'order', result);
+    return commandJson(c, 'batch', result);
   });
 
-  v1.get('/monthly-closes/:competence', async (c) => {
+  v2.get('/monthly-closes/:competence', async (c) => {
     const competence = c.req.param('competence');
     if (!isValidCompetence(competence)) {
       return jsonError(c, 400, 'INVALID_COMPETENCE', 'Competência inválida.');
@@ -305,7 +309,7 @@ export function portalApiRoutes(deps: PortalDeps): Hono<PortalEnv> {
     return c.json({ close: value }, 200, { ...NO_STORE, ETag: etag });
   });
 
-  v1.post('/monthly-closes/:competence/invoice', uploadLimit, async (c) => {
+  v2.post('/monthly-closes/:competence/invoice', uploadLimit, async (c) => {
     const competence = c.req.param('competence');
     if (!isValidCompetence(competence)) {
       return jsonError(c, 400, 'INVALID_COMPETENCE', 'Competência inválida.');
@@ -322,7 +326,7 @@ export function portalApiRoutes(deps: PortalDeps): Hono<PortalEnv> {
     return commandJson(c, 'close', result);
   });
 
-  v1.get('/monthly-closes/:competence/invoice', async (c) => {
+  v2.get('/monthly-closes/:competence/invoice', async (c) => {
     const competence = c.req.param('competence');
     if (!isValidCompetence(competence)) {
       return jsonError(c, 400, 'INVALID_COMPETENCE', 'Competência inválida.');
@@ -332,21 +336,22 @@ export function portalApiRoutes(deps: PortalDeps): Hono<PortalEnv> {
 
   // Known resources with an unlisted method → 405; anything else → 404.
   for (const path of [
-    '/orders',
-    '/orders/:id',
-    '/orders/:id/files/:fileId',
-    '/orders/:id/collected',
-    '/orders/:id/quotes',
-    '/orders/:id/quotes/:quoteId/file',
-    '/orders/:id/printed',
+    '/batches',
+    '/batches/open',
+    '/batches/:id',
+    '/batches/:id/orders/:orderId/files/:fileId',
+    '/batches/:id/collected',
+    '/batches/:id/quotes',
+    '/batches/:id/quotes/:quoteId/file',
+    '/batches/:id/printed',
     '/monthly-closes/:competence',
     '/monthly-closes/:competence/invoice',
   ]) {
-    v1.all(path, (c) => jsonError(c, 405, 'METHOD_NOT_ALLOWED', 'Método não permitido.'));
+    v2.all(path, (c) => jsonError(c, 405, 'METHOD_NOT_ALLOWED', 'Método não permitido.'));
   }
-  v1.all('*', (c) => jsonError(c, 404, 'NOT_FOUND', 'Recurso não encontrado.'));
+  v2.all('*', (c) => jsonError(c, 404, 'NOT_FOUND', 'Recurso não encontrado.'));
 
-  app.route('/api/print/v1', v1);
+  app.route('/api/print/v2', v2);
   app.all('/api/*', (c) => jsonError(c, 404, 'NOT_FOUND', 'Recurso não encontrado.'));
   return app;
 }

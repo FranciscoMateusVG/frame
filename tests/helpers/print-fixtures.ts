@@ -1,10 +1,10 @@
 /**
  * Synthetic print fixtures: tiny but real PDF/PNG bytes (distinct hashes),
- * and a seeded two-job order shaped like spec §8 P1 (copies 2 and 7,
+ * and a published two-job request shaped like spec §8 P1 (copies 2 and 7,
  * different instructions, Unicode file name).
  */
 import type { PrintApiMemory } from '../../src/adapters/print-api.memory.js';
-import type { Order } from '../../src/domain/print-order.js';
+import type { BatchItem } from '../../src/domain/print-batch.js';
 
 export const PDF_BYTES = new TextEncoder().encode(
   '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
@@ -18,8 +18,9 @@ export const PNG_BYTES = new Uint8Array([
   0x42, 0x60, 0x82,
 ]);
 
-export function seedTwoFileOrder(api: PrintApiMemory, title?: string): Order {
-  return api.seedOrder({
+/** Publish the request: it joins the open batch (or opens one). */
+export function seedTwoFileRequest(api: PrintApiMemory, title?: string): BatchItem {
+  return api.publishRequest({
     ...(title ? { title } : {}),
     jobs: [
       {

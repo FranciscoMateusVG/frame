@@ -1,5 +1,5 @@
 /**
- * Monthly invoice close (spec print-portal §3.5, §4.2 `Close`).
+ * Monthly invoice close (spec print-portal §3.5; v2 `BatchClose`).
  *
  * Competence is `YYYY-MM` in America/Sao_Paulo. Only a closed period
  * (after the end of the month) accepts an invoice; the current month can be
@@ -9,13 +9,17 @@
 export const CLOSE_STATES = ['open', 'submitted', 'rejected', 'accepted'] as const;
 export type CloseState = (typeof CLOSE_STATES)[number];
 
-export interface CloseItem {
-  readonly orderId: string;
+interface CloseCharge {
   readonly reference: string;
   readonly quoteId: string;
   readonly amountCents: number;
   readonly printedAt: string;
 }
+
+/** One charge of the month: a whole batch quote, or a historical individual order. */
+export type CloseItem =
+  | (CloseCharge & { readonly kind: 'batch'; readonly batchId: string })
+  | (CloseCharge & { readonly kind: 'legacy_order'; readonly orderId: string });
 
 export interface CloseDocument {
   readonly id: string;

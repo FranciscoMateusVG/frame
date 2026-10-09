@@ -1,12 +1,12 @@
 /**
- * Server-rendered pages (spec §7): /login, /orders, /orders/:id, /invoices,
- * plus their form actions. Forms post to the portal itself with a hidden
+ * Server-rendered pages: /login, / (the current batch), /batches (history),
+ * /batches/:id (read-only detail), /invoices, plus their form actions. Forms post to the portal itself with a hidden
  * CSRF token and our exact Origin; every command carries the If-Match ETag
  * the page was rendered with and an Idempotency-Key minted at render time.
  *
  * After an ambiguous failure (timeout/503) the page is re-rendered with the
- * SAME key and ETag while the order is unchanged, so "repeat" is the same
- * intent and can never double-apply; "Consultar novamente" is a plain GET.
+ * SAME key and ETag while the batch is unchanged, so "repeat" is the same
+ * intent and can never double-apply; "Atualizar" is a plain GET.
  */
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
@@ -14,7 +14,6 @@ import type { Upload } from '../adapters/print-api.js';
 import { parseBrlToCents } from '../domain/money.js';
 import { competenceOf, isValidCompetence, previousCompetence } from '../domain/monthly-close.js';
 import type { PortalSession } from '../domain/portal-session.js';
-import { isOrderStatus, type Order } from '../domain/print-order.js';
 import { CsrfFailedError } from '../errors/csrf-failed.error.js';
 import { InvalidCredentialsError } from '../errors/invalid-credentials.error.js';
 import { InvalidRequestError } from '../errors/invalid-request.error.js';
@@ -23,13 +22,14 @@ import { UnauthenticatedError } from '../errors/unauthenticated.error.js';
 import { UpstreamRejectedError } from '../errors/upstream-rejected.error.js';
 import { UpstreamUnavailableError } from '../errors/upstream-unavailable.error.js';
 import { authenticateSession } from '../use-cases/authenticate-session.js';
-import { collectOrderFiles } from '../use-cases/collect-order-files.js';
+import { collectBatchFiles } from '../use-cases/collect-batch-files.js';
+import { getBatch } from '../use-cases/get-batch.js';
+import { getCurrentBatch } from '../use-cases/get-current-batch.js';
 import { getMonthlyClose } from '../use-cases/get-monthly-close.js';
-import { getOrder } from '../use-cases/get-order.js';
-import { listOrders } from '../use-cases/list-orders.js';
+import { listBatches } from '../use-cases/list-batches.js';
 import { logIn } from '../use-cases/log-in.js';
 import { logOut } from '../use-cases/log-out.js';
-import { markOrderPrinted } from '../use-cases/mark-order-printed.js';
+import { markBatchPrinted } from '../use-cases/mark-batch-printed.js';
 import { openSession } from '../use-cases/open-session.js';
 import { submitInvoice } from '../use-cases/submit-invoice.js';
 import { submitQuote } from '../use-cases/submit-quote.js';
@@ -52,12 +52,12 @@ import {
 import {
   type ActionForm,
   type Banner,
+  batchDetailPage,
   errorPage,
+  historyPage,
+  homePage,
   invoicesPage,
   loginPage,
-  orderPage,
-  ordersPage,
-  orderUnavailablePage,
 } from './portal-views.js';
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -72,14 +72,17 @@ const SUCCESS: Record<string, string> = {
 
 const UNAVAILABLE: Banner = {
   kind: 'error',
-  text: 'Serviço indisponível no momento. Não sabemos se a operação foi concluída: use “Consultar novamente” antes de repetir. Repetir com o mesmo formulário não duplica a operação.',
+  text: 'Serviço indisponível no momento. Não sabemos se a operação foi concluída: use “Atualizar” antes de repetir. Repetir com o mesmo formulário não duplica a operação.',
 };
 
 /** Human message for a contract error code. */
 function rejectionBanner(error: UpstreamRejectedError): Banner {
   switch (error.code) {
     case 'VERSION_MISMATCH':
-      return { kind: 'error', text: 'Pedido atualizado; confira novamente.' };
+      return {
+        kind: 'error',
+        text: 'O lote mudou desde que você o abriu. Confira os arquivos de novo e confirme outra vez.',
+      };
     case 'INVALID_STATE':
       return {
         kind: 'error',
@@ -88,7 +91,7 @@ function rejectionBanner(error: UpstreamRejectedError): Banner {
     case 'IDEMPOTENCY_CONFLICT':
       return {
         kind: 'error',
-        text: 'Esta operação já foi enviada com outros dados. Confira o pedido e tente de novo.',
+        text: 'Esta operação já foi enviada com outros dados. Confira o lote e tente de novo.',
       };
     case 'OPERATION_IN_PROGRESS':
       return {
@@ -105,11 +108,13 @@ function rejectionBanner(error: UpstreamRejectedError): Banner {
     case 'PERIOD_OPEN':
       return { kind: 'error', text: 'A competência ainda não foi encerrada.' };
     case 'EMPTY_CLOSE':
-      return { kind: 'error', text: 'Não há pedidos impressos nesta competência.' };
+      return { kind: 'error', text: 'Não há lotes impressos nesta competência.' };
     case 'RATE_LIMITED':
       return { kind: 'error', text: 'Muitas requisições. Tente novamente em instantes.' };
+    case 'EMPTY_BATCH':
+      return { kind: 'error', text: 'O lote está vazio.' };
     case 'NOT_FOUND':
-      return { kind: 'error', text: 'Pedido não encontrado.' };
+      return { kind: 'error', text: 'Lote não encontrado.' };
     default:
       return {
         kind: 'error',
@@ -197,10 +202,6 @@ function retryAfterFailure(
   return { banner: rejectionBanner(error), status: error.status, retry };
 }
 
-function ordersHref(status: string | undefined): string {
-  return status ? `/orders?status=${status}` : '/orders';
-}
-
 /** Login failure → status + message, or null for unexpected errors. */
 function loginFailure(error: unknown): { status: number; text: string } | null {
   if (error instanceof InvalidCredentialsError) return { status: 401, text: 'Senha incorreta.' };
@@ -218,12 +219,10 @@ function loginFailure(error: unknown): { status: number; text: string } | null {
   return null;
 }
 
-/** /orders query: status filter, cursor and the back-stack for "Anterior". */
-function ordersQuery(c: PortalContext) {
-  const statusParam = c.req.query('status');
+/** /batches query: cursor and the back-stack for "Anterior". */
+function historyQuery(c: PortalContext) {
   const cursorParam = c.req.query('cursor');
   return {
-    status: isOrderStatus(statusParam) ? statusParam : undefined,
     cursor: cursorParam && cursorParam.length <= 512 ? cursorParam : undefined,
     back: (c.req.queries('back') ?? []).filter((b) => b.length <= 512).slice(-50),
   };
@@ -273,102 +272,13 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
     return (await c.req.parseBody({ all: true }).catch(() => ({}))) as FormFields;
   }
 
-  /** The order, or the error page to show instead. */
-  async function loadOrder(
-    c: PortalContext,
-    session: PortalSession,
-    orderId: string,
-    opts: { banner?: Banner; status?: number },
-  ): Promise<{ value: Order; etag: string } | Response> {
-    try {
-      return await getOrder(deps.print, orderId);
-    } catch (error) {
-      if (error instanceof UpstreamRejectedError && error.status === 404) {
-        const notFound: Banner = { kind: 'error', text: 'Pedido não encontrado.' };
-        return c.html(errorPage('Pedido não encontrado', notFound, session.csrfToken), 404);
-      }
-      if (!isUpstreamError(error)) throw error;
-      return c.html(
-        orderUnavailablePage(session.csrfToken, orderId, opts.banner ?? UNAVAILABLE),
-        (opts.status ?? 503) as 503,
-      );
-    }
-  }
-
-  async function renderOrder(
-    c: PortalContext,
-    session: PortalSession,
-    orderId: string,
-    opts: { banner?: Banner; status?: number; retry?: ActionForm } = {},
-  ): Promise<Response> {
-    const tagged = await loadOrder(c, session, orderId, opts);
-    if (tagged instanceof Response) return tagged;
-    return c.html(
-      orderPage({
-        csrfToken: session.csrfToken,
-        order: tagged.value,
-        form: nextForm(tagged.etag, opts.retry, false),
-        ...(opts.banner ? { banner: opts.banner } : {}),
-      }),
-      (opts.status ?? 200) as 200,
-    );
-  }
-
-  /** Common failure handling for order commands. */
-  async function orderCommandFailed(
-    c: PortalContext,
-    session: PortalSession,
-    orderId: string,
-    error: unknown,
-    attempt: ActionForm,
-  ): Promise<Response> {
-    if (error instanceof UpstreamUnavailableError) {
-      return renderOrder(c, session, orderId, { banner: UNAVAILABLE, status: 503, retry: attempt });
-    }
-    if (error instanceof UpstreamRejectedError) {
-      return renderOrder(c, session, orderId, {
-        banner: rejectionBanner(error),
-        status: error.status,
-        ...(error.code === 'OPERATION_IN_PROGRESS' ? { retry: attempt } : {}),
-      });
-    }
-    throw error;
-  }
-
-  /** Origin + session + CSRF for a form command; a Response when refused. */
-  async function beginCommand(
-    c: PortalContext,
-  ): Promise<{ form: FormFields; session: PortalSession } | Response> {
-    const form = await readForm(c);
-    if (!form) return forbidden(c);
-    const session = await sessionOrLogin(c, text(form, '_csrf'));
-    return session instanceof Response ? session : { form, session };
-  }
-
-  /** Validated hidden command fields, or null. */
-  function commandFields(form: FormFields): { key: string; etag: string } | null {
-    const key = text(form, 'idempotencyKey');
-    const etag = text(form, 'etag');
-    if (!key || !UUID_RE.test(key) || !etag || !ETAG_RE.test(etag)) return null;
-    return { key, etag };
-  }
-
-  function badRequest(c: PortalContext, session: PortalSession, orderId: string, message: string) {
-    return renderOrder(c, session, orderId, {
-      banner: { kind: 'error', text: message },
-      status: 400,
-    });
-  }
-
   // ── login / logout ──
-
-  app.get('/', (c) => c.redirect('/orders', 302));
 
   app.get('/login', async (c) => {
     const result = await openSession(deps.session, {
       sessionIds: [sessionIdFrom(c), preSessionIdFrom(c)],
     });
-    if (result.session.authenticated) return c.redirect('/orders', 302);
+    if (result.session.authenticated) return c.redirect('/', 302);
     if (result.created) setPreSessionCookie(c, result.session.id);
     return c.html(loginPage(result.session.csrfToken));
   });
@@ -384,7 +294,7 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
         password: text(form, 'password'),
       });
       setSessionCookie(c, result.session.id);
-      return c.redirect('/orders', 303);
+      return c.redirect('/', 303);
     } catch (error) {
       const failure = loginFailure(error);
       if (!failure) throw error;
@@ -415,80 +325,158 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
     return c.redirect('/login', 303);
   });
 
-  // ── orders ──
+  // ── current batch (home) ──
 
-  app.get('/orders', async (c) => {
-    const session = await sessionOrLogin(c);
-    if (session instanceof Response) return session;
-    const { status, cursor, back } = ordersQuery(c);
+  async function renderHome(
+    c: PortalContext,
+    session: PortalSession,
+    opts: { banner?: Banner; status?: number; retry?: ActionForm } = {},
+  ): Promise<Response> {
+    const status = (opts.status ?? 200) as 200;
+    let current: Awaited<ReturnType<typeof getCurrentBatch>>;
     try {
-      const page = await listOrders(deps.print, { limit: 20, ...compact({ status, cursor }) });
-      return c.html(ordersPage({ csrfToken: session.csrfToken, status, page, cursor, back }));
+      current = await getCurrentBatch(deps.print);
     } catch (error) {
       if (!isUpstreamError(error)) throw error;
-      if (error.code === 'INVALID_CURSOR') return c.redirect(ordersHref(status), 302);
       const httpStatus = error instanceof UpstreamRejectedError ? error.status : 503;
       return c.html(
-        ordersPage({ csrfToken: session.csrfToken, status, page: null, cursor, back }),
+        homePage({ csrfToken: session.csrfToken, current: 'unavailable', banner: UNAVAILABLE }),
         httpStatus as 503,
       );
     }
-  });
+    const banner = opts.banner ? { banner: opts.banner } : {};
+    if (!current)
+      return c.html(homePage({ csrfToken: session.csrfToken, current, ...banner }), status);
+    return c.html(
+      homePage({
+        csrfToken: session.csrfToken,
+        current: {
+          csrfToken: session.csrfToken,
+          batch: current.value,
+          form: nextForm(current.etag, opts.retry, false),
+        },
+        ...banner,
+      }),
+      status,
+    );
+  }
 
-  app.get('/orders/:id', async (c) => {
+  /** Common failure handling for batch commands: re-render the home, never a false success. */
+  async function batchCommandFailed(
+    c: PortalContext,
+    session: PortalSession,
+    error: unknown,
+    attempt: ActionForm,
+  ): Promise<Response> {
+    if (error instanceof UpstreamUnavailableError) {
+      return renderHome(c, session, { banner: UNAVAILABLE, status: 503, retry: attempt });
+    }
+    if (error instanceof UpstreamRejectedError) {
+      return renderHome(c, session, {
+        banner: rejectionBanner(error),
+        status: error.status,
+        ...(error.code === 'OPERATION_IN_PROGRESS' ? { retry: attempt } : {}),
+      });
+    }
+    throw error;
+  }
+
+  /** Origin + session + CSRF for a form command; a Response when refused. */
+  async function beginCommand(
+    c: PortalContext,
+  ): Promise<{ form: FormFields; session: PortalSession } | Response> {
+    const form = await readForm(c);
+    if (!form) return forbidden(c);
+    const session = await sessionOrLogin(c, text(form, '_csrf'));
+    return session instanceof Response ? session : { form, session };
+  }
+
+  /**
+   * Validated hidden command fields + explicit confirmation, or the page to
+   * show instead. Every batch command must be confirmed in its dialog.
+   */
+  async function batchCommandFields(
+    c: PortalContext,
+    session: PortalSession,
+    form: FormFields,
+  ): Promise<{ key: string; etag: string } | Response> {
+    const key = text(form, 'idempotencyKey');
+    const etag = text(form, 'etag');
+    const batchId = c.req.param('id') ?? '';
+    if (!key || !UUID_RE.test(key) || !etag || !ETAG_RE.test(etag) || !UUID_RE.test(batchId)) {
+      return badRequest(c, session, 'Formulário inválido. Recarregue a página.');
+    }
+    if (text(form, 'confirmed') !== '1') {
+      return badRequest(c, session, 'Confirme a operação na janela de confirmação.');
+    }
+    return { key, etag };
+  }
+
+  /** Validated hidden NF command fields, or null. */
+  function commandFields(form: FormFields): { key: string; etag: string } | null {
+    const key = text(form, 'idempotencyKey');
+    const etag = text(form, 'etag');
+    if (!key || !UUID_RE.test(key) || !etag || !ETAG_RE.test(etag)) return null;
+    return { key, etag };
+  }
+
+  function badRequest(c: PortalContext, session: PortalSession, message: string) {
+    return renderHome(c, session, { banner: { kind: 'error', text: message }, status: 400 });
+  }
+
+  app.get('/', async (c) => {
     const session = await sessionOrLogin(c);
     if (session instanceof Response) return session;
-    return renderOrder(c, session, c.req.param('id'), successBanner(c));
+    return renderHome(c, session, successBanner(c));
   });
 
-  app.post('/orders/:id/collected', async (c) => {
+  app.post('/batches/:id/collected', async (c) => {
     const begun = await beginCommand(c);
     if (begun instanceof Response) return begun;
     const { form, session } = begun;
-    const orderId = c.req.param('id');
-    const fields = commandFields(form);
-    const revision = Number(text(form, 'revision'));
-    if (!fields || !Number.isSafeInteger(revision) || revision < 1) {
-      return badRequest(c, session, orderId, 'Formulário inválido. Recarregue a página.');
-    }
     if (text(form, 'checked') !== '1') {
-      return badRequest(c, session, orderId, 'Marque “Conferi todos os arquivos desta revisão”.');
+      return badRequest(c, session, 'Marque “Conferi todos os arquivos” antes de confirmar.');
     }
-    const attempt = { idempotencyKey: fields.key, etag: fields.etag };
+    const fields = await batchCommandFields(c, session, form);
+    if (fields instanceof Response) return fields;
     try {
-      await collectOrderFiles(
+      await collectBatchFiles(
         deps.print,
-        { orderId, revision },
+        { batchId: c.req.param('id') },
         { ifMatch: fields.etag, idempotencyKey: fields.key },
       );
     } catch (error) {
-      return orderCommandFailed(c, session, orderId, error, attempt);
+      return batchCommandFailed(c, session, error, {
+        idempotencyKey: fields.key,
+        etag: fields.etag,
+      });
     }
-    return c.redirect(`/orders/${encodeURIComponent(orderId)}?ok=collected`, 303);
+    return c.redirect('/?ok=collected', 303);
   });
 
-  app.post('/orders/:id/printed', async (c) => {
+  app.post('/batches/:id/printed', async (c) => {
     const begun = await beginCommand(c);
     if (begun instanceof Response) return begun;
     const { form, session } = begun;
-    const orderId = c.req.param('id');
-    const fields = commandFields(form);
-    const revision = Number(text(form, 'revision'));
+    const fields = await batchCommandFields(c, session, form);
+    if (fields instanceof Response) return fields;
     const quoteId = text(form, 'quoteId') ?? '';
-    if (!fields || !Number.isSafeInteger(revision) || revision < 1 || !UUID_RE.test(quoteId)) {
-      return badRequest(c, session, orderId, 'Formulário inválido. Recarregue a página.');
+    if (!UUID_RE.test(quoteId)) {
+      return badRequest(c, session, 'Formulário inválido. Recarregue a página.');
     }
-    const attempt = { idempotencyKey: fields.key, etag: fields.etag };
     try {
-      await markOrderPrinted(
+      await markBatchPrinted(
         deps.print,
-        { orderId, revision, quoteId },
+        { batchId: c.req.param('id'), quoteId },
         { ifMatch: fields.etag, idempotencyKey: fields.key },
       );
     } catch (error) {
-      return orderCommandFailed(c, session, orderId, error, attempt);
+      return batchCommandFailed(c, session, error, {
+        idempotencyKey: fields.key,
+        etag: fields.etag,
+      });
     }
-    return c.redirect(`/orders/${encodeURIComponent(orderId)}?ok=printed`, 303);
+    return c.redirect('/?ok=printed', 303);
   });
 
   const htmlUploadLimit = limitBody(UPLOAD_BODY_MAX_BYTES, (c) =>
@@ -498,29 +486,21 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
     ),
   );
 
-  app.post('/orders/:id/quotes', htmlUploadLimit, async (c) => {
+  app.post('/batches/:id/quotes', htmlUploadLimit, async (c) => {
     const begun = await beginCommand(c);
     if (begun instanceof Response) return begun;
     const { form, session } = begun;
-    const orderId = c.req.param('id');
-    const fields = commandFields(form);
-    const orderRevision = Number(text(form, 'orderRevision'));
-    if (!fields || !Number.isSafeInteger(orderRevision) || orderRevision < 1) {
-      return badRequest(c, session, orderId, 'Formulário inválido. Recarregue a página.');
-    }
+    const fields = await batchCommandFields(c, session, form);
+    if (fields instanceof Response) return fields;
     const attempt = {
       idempotencyKey: fields.key,
       etag: fields.etag,
       amountText: text(form, 'amount') ?? '',
     };
     const invalid = (message: string, status: number) =>
-      renderOrder(c, session, orderId, {
-        banner: { kind: 'error', text: message },
-        status,
-        retry: attempt,
-      });
+      renderHome(c, session, { banner: { kind: 'error', text: message }, status, retry: attempt });
     const doc = await readDocumentForm(form, {
-      amount: 'Valor do orçamento',
+      amount: 'Valor total do orçamento',
       file: 'arquivo do orçamento',
       fallbackName: 'orcamento',
     });
@@ -528,7 +508,7 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
     try {
       await submitQuote(
         deps.print,
-        { orderId, orderRevision, amountCents: doc.amountCents, file: doc.upload },
+        { batchId: c.req.param('id'), amountCents: doc.amountCents, file: doc.upload },
         { ifMatch: fields.etag, idempotencyKey: fields.key },
       );
     } catch (error) {
@@ -536,9 +516,53 @@ export function portalHtmlRoutes(deps: PortalDeps): Hono<PortalEnv> {
         error instanceof UpstreamRejectedError &&
         (error.code === 'FILE_TOO_LARGE' || error.code === 'UNSUPPORTED_MEDIA_TYPE');
       if (fileProblem) return invalid(rejectionBanner(error).text, error.status);
-      return orderCommandFailed(c, session, orderId, error, attempt);
+      return batchCommandFailed(c, session, error, attempt);
     }
-    return c.redirect(`/orders/${encodeURIComponent(orderId)}?ok=quote`, 303);
+    return c.redirect('/?ok=quote', 303);
+  });
+
+  // ── history ──
+
+  app.get('/batches', async (c) => {
+    const session = await sessionOrLogin(c);
+    if (session instanceof Response) return session;
+    const { cursor, back } = historyQuery(c);
+    try {
+      const page = await listBatches(deps.print, { limit: 20, ...compact({ cursor }) });
+      return c.html(historyPage({ csrfToken: session.csrfToken, page, cursor, back }));
+    } catch (error) {
+      if (!isUpstreamError(error)) throw error;
+      if (error.code === 'INVALID_CURSOR') return c.redirect('/batches', 302);
+      const httpStatus = error instanceof UpstreamRejectedError ? error.status : 503;
+      return c.html(
+        historyPage({ csrfToken: session.csrfToken, page: null, cursor, back }),
+        httpStatus as 503,
+      );
+    }
+  });
+
+  app.get('/batches/:id', async (c) => {
+    const session = await sessionOrLogin(c);
+    if (session instanceof Response) return session;
+    const batchId = c.req.param('id');
+    const notFound = () =>
+      c.html(
+        errorPage(
+          'Lote não encontrado',
+          { kind: 'error', text: 'Lote não encontrado.' },
+          session.csrfToken,
+        ),
+        404,
+      );
+    if (!UUID_RE.test(batchId)) return notFound();
+    try {
+      const { value } = await getBatch(deps.print, batchId);
+      return c.html(batchDetailPage(session.csrfToken, value));
+    } catch (error) {
+      if (error instanceof UpstreamRejectedError && error.status === 404) return notFound();
+      if (!isUpstreamError(error)) throw error;
+      return c.html(errorPage('Lote', UNAVAILABLE, session.csrfToken), 503);
+    }
   });
 
   // ── invoices ──
