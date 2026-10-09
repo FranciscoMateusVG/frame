@@ -11,7 +11,10 @@ defmodule Frame.Test.FakeHono do
 
   It checks the bearer token like the real middleware (401 otherwise) and
   can misbehave on demand (`misbehave/2`): `:redirect`, `:slow`, `:huge`,
-  `:drift` (off-contract body), `:html_500`, `:short_body`, `:no_closes`. It records the
+  `:drift` (off-contract body), `:html_500`, `:short_body`, `:no_closes`,
+  `:lost_reply` (a command is applied, then answered 503 — the reply is
+  lost on the way back). It serves both `/api/print-portal/v1` and the
+  batch contract `/api/print-portal/v2`. It records the
   headers of the last request (`last_headers/1`) so tests can assert what
   the portal sends.
   """
@@ -24,6 +27,7 @@ defmodule Frame.Test.FakeHono do
   alias Frame.Adapters.PrintApi.Memory
 
   @prefix ["api", "print-portal", "v1"]
+  @v2 ["api", "print-portal", "v2"]
 
   defstruct [:port, :memory, :control, :token, :tenants]
 
@@ -116,6 +120,22 @@ defmodule Frame.Test.FakeHono do
     if "monthly-closes" in conn.path_info,
       do: json(conn, 404, err("NOT_FOUND", "Recurso não encontrado.")),
       else: serve(conn, state)
+  end
+
+  # The command lands upstream; only its answer is lost.
+  defp misbehave_now(conn, :lost_reply, state) do
+    if conn.method == "GET" do
+      serve(conn, state)
+    else
+      Agent.update(state.control, &%{&1 | mode: nil})
+
+      conn
+      |> register_before_send(fn conn ->
+        %{conn | resp_headers: [{"content-type", "application/json"}]}
+        |> resp(503, JSON.encode!(err("UPSTREAM_UNAVAILABLE", "x")))
+      end)
+      |> serve(state)
+    end
   end
 
   defp misbehave_now(conn, :redirect, _state),
@@ -227,6 +247,69 @@ defmodule Frame.Test.FakeHono do
     }
 
     reply(conn, PrintApi.submit_invoice(m, c, input, pre(conn)))
+  end
+
+  # --- v2: batches ---
+
+  defp route(conn, m, "GET", @v2 ++ ["batches"]) do
+    conn = fetch_query_params(conn)
+    q = conn.query_params
+
+    query =
+      %{}
+      |> put_if(:status, q["status"])
+      |> put_if(:limit, q["limit"] && String.to_integer(q["limit"]))
+      |> put_if(:cursor, q["cursor"])
+
+    reply(conn, PrintApi.list_batches(m, query))
+  end
+
+  defp route(conn, m, "GET", @v2 ++ ["batches", "open"]),
+    do: reply(conn, PrintApi.get_open_batch(m))
+
+  defp route(conn, m, "GET", @v2 ++ ["batches", id]), do: reply(conn, PrintApi.get_batch(m, id))
+
+  defp route(conn, m, "GET", @v2 ++ ["batches", id, "orders", order_id, "files", file_id]),
+    do: download(conn, m, {:batch_file, id, order_id, file_id})
+
+  defp route(conn, m, "GET", @v2 ++ ["batches", id, "quotes", qid, "file"]),
+    do: download(conn, m, {:batch_quote_file, id, qid})
+
+  defp route(conn, m, "GET", @v2 ++ ["monthly-closes", c, "invoice"]),
+    do: download(conn, m, {:batch_invoice_file, c})
+
+  defp route(conn, m, "GET", @v2 ++ ["monthly-closes", c]),
+    do: reply(conn, PrintApi.get_batch_close(m, c))
+
+  defp route(conn, m, "POST", @v2 ++ ["batches", id, "collected"]) do
+    {:ok, raw, conn} = read_body(conn)
+    %{} = JSON.decode!(raw)
+    reply(conn, PrintApi.collect_batch(m, id, pre(conn)))
+  end
+
+  defp route(conn, m, "POST", @v2 ++ ["batches", id, "printed"]) do
+    {:ok, raw, conn} = read_body(conn)
+    %{"quoteId" => q} = JSON.decode!(raw)
+    reply(conn, PrintApi.mark_batch_printed(m, id, %{quote_id: q}, pre(conn)))
+  end
+
+  defp route(conn, m, "POST", @v2 ++ ["batches", id, "quotes"]) do
+    conn = parse_multipart(conn)
+    p = conn.body_params
+    input = %{amount_cents: String.to_integer(p["amountCents"]), file: upload(p["file"])}
+    reply(conn, PrintApi.submit_batch_quote(m, id, input, pre(conn)))
+  end
+
+  defp route(conn, m, "POST", @v2 ++ ["monthly-closes", c, "invoice"]) do
+    conn = parse_multipart(conn)
+    p = conn.body_params
+
+    input = %{
+      declared_total_cents: String.to_integer(p["declaredTotalCents"]),
+      file: upload(p["file"])
+    }
+
+    reply(conn, PrintApi.submit_batch_invoice(m, c, input, pre(conn)))
   end
 
   defp route(conn, _m, _method, _path),

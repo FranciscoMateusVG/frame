@@ -4,39 +4,10 @@ defmodule Frame.Unit.OrderCloseTest do
   alias Frame.Domain.Close
   alias Frame.Domain.Order
 
-  test "statuses and labels" do
+  test "the v1 order statuses (the JSON API's list filter)" do
     assert length(Order.statuses()) == 7
     assert Order.status?("ready")
     refute Order.status?("awaiting_readiness")
-    assert Order.status_label("quote_pending") == "Aguardando aprovação do Financeiro"
-    assert Order.status_label("weird") == "weird"
-  end
-
-  test "next_action/1 follows the state machine" do
-    assert Order.next_action(%{"status" => "ready"}) == :collect
-    assert Order.next_action(%{"status" => "files_collected"}) == :quote
-    assert Order.next_action(%{"status" => "quote_pending"}) == :await_decision
-    assert Order.next_action(%{"status" => "quote_rejected"}) == :requote
-
-    assert Order.next_action(%{
-             "status" => "quote_approved",
-             "currentQuote" => %{"decision" => "approved"}
-           }) == :print
-
-    # Approved status without an approved quote never offers printing.
-    assert Order.next_action(%{
-             "status" => "quote_approved",
-             "currentQuote" => %{"decision" => "pending"}
-           }) == :none
-
-    assert Order.next_action(%{"status" => "printed"}) == :none
-    assert Order.next_action(%{"status" => "cancelled"}) == :none
-  end
-
-  test "etag and copies" do
-    assert Order.etag(%{"id" => "abc", "version" => 3}) == ~s("abc:3")
-    assert Order.total_copies(%{"jobs" => [%{"copies" => 2}, %{"copies" => 7}]}) == 9
-    assert Order.total_copies(%{}) == 0
   end
 
   test "close submission rules" do

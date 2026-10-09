@@ -64,7 +64,7 @@ defmodule Frame.Integration.ApplicationTest do
 
     assert {:ok, %{status: 200}} = get.("/healthz")
     assert {:ok, %{status: 200, body: ~s({"ready":true})}} = get.("/readyz")
-    assert {:ok, %{status: 302}} = get.("/orders")
+    assert {:ok, %{status: 302}} = get.("/")
     assert {:ok, %{status: 200, body: body}} = get.("/api/session")
     assert body =~ ~s("authenticated":false)
 

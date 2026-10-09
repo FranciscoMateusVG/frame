@@ -57,7 +57,7 @@
 ```
 lib/frame/application.ex  — Composition root (the only place naming concrete adapters).
 lib/frame/config.ex       — Env → Config, fail closed.
-lib/frame/domain/         — Pure: Order, Close, Contract, Competence, Money, Document, Requests, Session, LoginThrottle.
+lib/frame/domain/         — Pure: Order, Batch, Close, Contract, Competence, Money, Document, Requests, Session, LoginThrottle.
 lib/frame/use_cases/      — One file per use case. Plain functions taking deps as args.
 lib/frame/adapters/       — Ports (behaviours) + implementations (<port>/<impl>.ex).
 lib/frame/web.ex          — `use Frame.Web, :controller | :live_view | :html`.

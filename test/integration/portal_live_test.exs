@@ -1,15 +1,16 @@
 defmodule Frame.Integration.PortalLiveTest do
   @moduledoc """
-  The supplier journey of spec §7 through the LiveView pages, the way a
-  browser drives them (Phoenix.LiveViewTest): filters and pagination,
-  two-step confirmations, uploads, and every command running over the
-  socket through the same use cases as the JSON API — against the upstream
-  (FakeHono) over the real HTTP adapter.
+  The supplier pages of spec §7 through LiveView, the way a browser drives
+  them (Phoenix.LiveViewTest): **Notas fiscais** (v2 monthly closes) and
+  the session rules every page shares — against the upstream (FakeHono)
+  over the real HTTP adapter. The batch screens have their own module
+  (`Frame.Integration.PortalBatchLiveTest`).
   """
   use Frame.Test.PortalCase, async: true
 
   alias Frame.Adapters.PrintApi
   alias Frame.Adapters.PrintApi.Memory
+  alias Frame.Test.BatchFixture
   alias Frame.Test.FakeHono
   alias Frame.Web.Security
 
@@ -25,336 +26,9 @@ defmodule Frame.Integration.PortalLiveTest do
 
   defp pre(etag), do: %{if_match: etag, idempotency_key: Ids.uuid()}
 
-  defp to_collected(p, o) do
-    {:ok, _} = PrintApi.collect(p.memory, o["id"], %{revision: 1}, pre(~s("#{o["id"]}:1")))
-  end
-
-  defp to_quoted(p, o, cents \\ 100) do
-    to_collected(p, o)
-    file = %{name: "q.pdf", content_type: "application/pdf", bytes: Portal.pdf()}
-
-    {:ok, r} =
-      PrintApi.submit_quote(
-        p.memory,
-        o["id"],
-        %{amount_cents: cents, order_revision: 1, file: file},
-        pre(~s("#{o["id"]}:2"))
-      )
-
-    r.body["order"]["currentQuote"]["id"]
-  end
-
-  defp order_status(p, o) do
-    {:ok, %{body: %{"order" => order}}} = PrintApi.get_order(p.memory, o["id"])
-    order["status"]
-  end
-
   defp upload(view, form, name, bytes, type \\ "application/pdf") do
     file = file_input(view, form, :file, [%{name: name, content: bytes, type: type}])
     render_upload(file, name)
-  end
-
-  describe "Pedidos" do
-    test "labels, empty state, failure and Atualizar", %{portal: p} do
-      {view, html} = live_page(p, "/orders")
-
-      for label <- ["Pedidos", "Notas fiscais", "Sair", "Status", "Atualizar"],
-          do: assert(html =~ label, label)
-
-      assert html =~ "Nenhum pedido"
-
-      # A new ready order appears on Atualizar, no push needed.
-      o = Portal.seed(p)
-      html = view |> form("#orders-filter") |> render_submit()
-      assert html =~ o["reference"]
-      assert has_element?(view, ~s(a[href="/orders/#{o["id"]}"]), "Ver pedido")
-
-      Memory.fail_with(p.memory, :unavailable)
-      html = view |> form("#orders-filter") |> render_submit()
-      assert html =~ "Não foi possível consultar os pedidos"
-      refute html =~ "Nenhum pedido"
-
-      Memory.fail_with(p.memory, nil)
-      html = view |> element("button", "Consultar novamente") |> render_click()
-      assert html =~ o["reference"]
-    end
-
-    test "the status filter patches the URL", %{portal: p} do
-      o = Portal.seed(p)
-      to_collected(p, Portal.seed(p))
-      {view, _html} = live_page(p, "/orders")
-
-      view |> form("#orders-filter", %{"status" => "ready"}) |> render_change()
-      assert_patch(view, "/orders?status=ready")
-      assert has_element?(view, "#order-#{o["id"]}")
-      assert view |> element("table.orders tbody") |> render() =~ "Pronto"
-      refute view |> element("table.orders tbody") |> render() =~ "Arquivos retirados"
-
-      view |> form("#orders-filter", %{"status" => ""}) |> render_change()
-      assert_patch(view, "/orders")
-    end
-
-    test "Anterior/Próxima walk the keyset pages", %{portal: p} do
-      refs =
-        for i <- 1..25 do
-          Portal.seed(p, created_at: DateTime.add(~U[2026-09-01 00:00:00.000Z], i))["reference"]
-        end
-
-      {view, html} = live_page(p, "/orders")
-      assert html =~ Enum.at(refs, 0)
-      refute html =~ Enum.at(refs, 20)
-
-      html = view |> element("a", "Próxima") |> render_click()
-      assert html =~ Enum.at(refs, 24)
-      refute html =~ ~r/#{Enum.at(refs, 0)}</
-
-      html = view |> element("a", "Anterior") |> render_click()
-      assert html =~ Enum.at(refs, 0)
-    end
-
-    test "an invalid cursor and a forged back stack", %{portal: p} do
-      Portal.seed(p)
-      {_view, html} = live_page(p, "/orders?cursor=bogus")
-      assert html =~ "Esta página da lista não vale mais."
-      {_view, html} = live_page(p, "/orders?status=weird&voltar=%3Cx%3E,-")
-      assert html =~ "IMP-"
-    end
-  end
-
-  describe "Ver pedido" do
-    test "legacy files have general instructions, no invented pairings or copies", %{portal: p} do
-      original = Portal.seed(p)
-      files = Enum.map(original["jobs"], & &1["file"])
-      text = "Todas as instruções\n<script>não executar</script>\nSem parear por posição."
-
-      legacy =
-        original
-        |> Map.put("jobs", [])
-        |> Map.put("generalInstructions", %{"text" => text, "files" => files})
-
-      Agent.update(p.memory.agent, &put_in(&1, [:orders, original["id"]], legacy))
-      {view, html} = live_page(p, "/orders/#{original["id"]}")
-      assert html =~ "Instruções gerais"
-      assert html =~ "Todas as instruções"
-      assert html =~ "&lt;script&gt;não executar&lt;/script&gt;"
-      assert html =~ "Sem parear por posição."
-      refute html =~ "<script>não executar</script>"
-      refute html =~ "Cópias no total"
-      refute has_element?(view, ".job")
-
-      for file <- files do
-        assert has_element?(
-                 view,
-                 ~s(a[href="/api/print/v1/orders/#{original["id"]}/files/#{file["id"]}"]),
-                 "Baixar arquivo"
-               )
-
-        assert html =~ file["name"]
-        {_p, download} = Portal.get(p, "/api/print/v1/orders/#{original["id"]}/files/#{file["id"]}")
-        assert download.status == 200
-        assert Base.encode16(:crypto.hash(:sha256, download.raw), case: :lower) == file["sha256"]
-      end
-
-      view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
-      assert view |> element("#confirm-collect") |> render() =~ "os 2 arquivos"
-      view |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
-      assert order_status(p, original) == "files_collected"
-      assert has_element?(view, "#general-instructions", "Instruções gerais")
-    end
-
-    test "Arquivos retirados → orçamento → aprovado → impresso", %{portal: p} do
-      o = Portal.seed(p)
-      {view, html} = live_page(p, "/orders/#{o["id"]}")
-
-      for text <- [
-            o["reference"],
-            "Revisão",
-            "Apostila de Matemática",
-            "Frente e verso, grampeado",
-            "Lista de Física",
-            "Baixar arquivo",
-            "Conferi todos os arquivos desta revisão",
-            "Arquivos retirados"
-          ],
-          do: assert(html =~ text, text)
-
-      for job <- o["jobs"],
-          do: assert(html =~ "/api/print/v1/orders/#{o["id"]}/files/#{job["file"]["id"]}")
-
-      # The checkbox is the supplier's declaration: without it nothing happens.
-      html = view |> form("#collect-form", %{}) |> render_submit()
-      assert html =~ "Marque “Conferi todos os arquivos desta revisão”"
-      refute has_element?(view, "#confirm-collect")
-
-      view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
-      assert has_element?(view, "#confirm-collect", "Confirmar retirada")
-      view |> element("#confirm-collect button", "Voltar") |> render_click()
-      refute has_element?(view, "#confirm-collect")
-      assert order_status(p, o) == "ready"
-
-      view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
-      html = view |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
-      assert html =~ "Retirada confirmada."
-      assert order_status(p, o) == "files_collected"
-
-      for text <- ["Valor do orçamento", "Arquivo do orçamento", "Enviar orçamento"],
-          do: assert(html =~ text, text)
-
-      html = view |> form("#quote-form", %{"valor" => "abc"}) |> render_change()
-      assert html =~ "Informe o valor do orçamento em reais"
-
-      html = view |> form("#quote-form", %{"valor" => "1.234,56"}) |> render_submit()
-      assert html =~ "Escolha o arquivo do orçamento"
-
-      upload(view, "#quote-form", "orçamento.pdf", Portal.pdf("q"))
-      view |> form("#quote-form", %{"valor" => "1.234,56"}) |> render_submit()
-      assert view |> element("#confirm-quote") |> render() =~ "R$ 1.234,56"
-
-      html = view |> element("#confirm-quote button", "Confirmar envio") |> render_click()
-      assert html =~ "Orçamento enviado. Aguardando aprovação do Financeiro."
-      assert html =~ "Aguardando aprovação do Financeiro"
-      assert html =~ "Baixar orçamento"
-      refute html =~ "Aprovar"
-
-      {:ok, %{body: %{"order" => %{"currentQuote" => quote}}}} =
-        PrintApi.get_order(p.memory, o["id"])
-
-      assert quote["amountCents"] == 123_456
-
-      :ok = Memory.decide_quote(p.memory, o["id"], :approved)
-      {view, html} = live_page(p, "/orders/#{o["id"]}")
-      assert html =~ "Orçamento aprovado"
-      view |> element("button", "Marcar como impresso") |> render_click()
-      assert has_element?(view, "#confirm-print", "Confirmar impressão")
-      html = view |> element("#confirm-print button", "Confirmar impressão") |> render_click()
-      assert html =~ "Impressão confirmada"
-      assert order_status(p, o) == "printed"
-    end
-
-    test "a rejected quote shows the reason (escaped) and Enviar novo orçamento", %{portal: p} do
-      o = Portal.seed(p)
-      to_quoted(p, o)
-      :ok = Memory.decide_quote(p.memory, o["id"], {:rejected, "Valor <acima> do combinado"})
-
-      {_view, html} = live_page(p, "/orders/#{o["id"]}")
-      assert html =~ "Valor &lt;acima&gt; do combinado"
-      assert html =~ "Enviar novo orçamento"
-    end
-
-    test "a stale page gets 'Pedido atualizado; confira novamente'", %{portal: p} do
-      o = Portal.seed(p)
-      {stale, _} = live_page(p, "/orders/#{o["id"]}")
-      {other, _} = live_page(p, "/orders/#{o["id"]}")
-
-      # Another tab collects first.
-      other |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
-      other |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
-
-      stale |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
-      html = stale |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
-      assert html =~ "Pedido atualizado; confira novamente."
-      # The page re-read the order: the next step is on screen.
-      assert html =~ "Valor do orçamento"
-    end
-
-    test "upstream silence: no false success; Repetir sends the same key and If-Match", %{
-      portal: p
-    } do
-      o = Portal.seed(p)
-      {view, _} = live_page(p, "/orders/#{o["id"]}")
-      view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
-
-      Memory.fail_with(p.memory, :unavailable)
-      html = view |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
-      assert html =~ "Sem resposta do sistema do Incluir"
-      assert html =~ "Consultar novamente"
-      assert html =~ "Repetir"
-      refute html =~ "Retirada confirmada"
-
-      Memory.fail_with(p.memory, nil)
-      html = view |> element("button", "Repetir") |> render_click()
-      assert html =~ "Retirada confirmada."
-      assert [first, second] = FakeHono.commands(p.hono)
-      assert second["idempotency-key"] == first["idempotency-key"]
-      assert second["if-match"] == first["if-match"]
-      assert order_status(p, o) == "files_collected"
-    end
-
-    test "Consultar novamente after a command that did land ends the intent", %{portal: p} do
-      o = Portal.seed(p)
-      {view, _} = live_page(p, "/orders/#{o["id"]}")
-      view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
-      Memory.fail_with(p.memory, :unavailable)
-      view |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
-      Memory.fail_with(p.memory, nil)
-
-      # It landed elsewhere (another tab, or the answer was lost).
-      to_collected(p, o)
-      html = view |> element("button", "Consultar novamente") |> render_click()
-      refute html =~ "Repetir"
-      assert html =~ "Valor do orçamento"
-    end
-
-    test "quote upload refusals: format, size and the upstream's verdict", %{portal: p} do
-      o = Portal.seed(p)
-      to_collected(p, o)
-      {view, _} = live_page(p, "/orders/#{o["id"]}")
-
-      assert {:error, [[_ref, :not_accepted]]} =
-               upload(view, "#quote-form", "notas.txt", "texto", "text/plain")
-
-      assert render(view) =~ "Formato não aceito"
-      view |> element("button[phx-click=cancel-upload]") |> render_click()
-
-      big = "%PDF-" <> :binary.copy("a", 5 * 1024 * 1024)
-      assert {:error, [[_ref, :too_large]]} = upload(view, "#quote-form", "grande.pdf", big)
-      assert render(view) =~ "O arquivo passa de 5 MB."
-      view |> element("button[phx-click=cancel-upload]") |> render_click()
-
-      # A .pdf that is not a PDF: the upstream's 415 is shown, nothing changes.
-      upload(view, "#quote-form", "falso.pdf", "<html>")
-      view |> form("#quote-form", %{"valor" => "10,00"}) |> render_submit()
-      html = view |> element("#confirm-quote button", "Confirmar envio") |> render_click()
-      assert html =~ "Formato não aceito. Envie PDF, JPEG, PNG ou WebP."
-      assert order_status(p, o) == "files_collected"
-    end
-
-    test "print from a stale page after another tab printed: no second command", %{portal: p} do
-      o = Portal.seed(p)
-      qid = to_quoted(p, o)
-      :ok = Memory.decide_quote(p.memory, o["id"], :approved)
-      {view, _} = live_page(p, "/orders/#{o["id"]}")
-      view |> element("button", "Marcar como impresso") |> render_click()
-
-      {:ok, _} =
-        PrintApi.mark_printed(
-          p.memory,
-          o["id"],
-          %{revision: 1, quote_id: qid},
-          pre(~s("#{o["id"]}:4"))
-        )
-
-      html = view |> element("#confirm-print button", "Confirmar impressão") |> render_click()
-      assert html =~ "Pedido atualizado; confira novamente."
-      assert html =~ "Impressão confirmada em"
-    end
-
-    test "unknown, foreign and malformed ids are a 404", %{portal: p} do
-      for id <- [Ids.uuid(), "not-a-uuid"] do
-        conn = get(Portal.conn(p), "/orders/#{id}")
-        assert html_response(conn, 404) =~ "Não encontrado"
-      end
-    end
-
-    test "the order page when the upstream is down offers Consultar novamente", %{portal: p} do
-      o = Portal.seed(p)
-      Memory.fail_with(p.memory, :unavailable)
-      {view, html} = live_page(p, "/orders/#{o["id"]}")
-      assert html =~ "Consultar novamente"
-      refute html =~ "Repetir"
-      Memory.fail_with(p.memory, nil)
-      assert view |> element("button", "Consultar novamente") |> render_click() =~ o["reference"]
-    end
   end
 
   describe "Notas fiscais" do
@@ -364,31 +38,33 @@ defmodule Frame.Integration.PortalLiveTest do
       %{portal: Portal.signed_in(p), clock: clock}
     end
 
-    defp printed_order(p, cents) do
-      o = Portal.seed(p)
-      qid = to_quoted(p, o, cents)
-      :ok = Memory.decide_quote(p.memory, o["id"], :approved)
-
-      {:ok, _} =
-        PrintApi.mark_printed(
-          p.memory,
-          o["id"],
-          %{revision: 1, quote_id: qid},
-          pre(~s("#{o["id"]}:4"))
-        )
-
-      o
+    # LOT-0001 collected, quoted, approved and printed now (the world's clock).
+    defp printed_batch(p, cents) do
+      batch = BatchFixture.batch("open")
+      BatchFixture.seed(p.memory, batch)
+      id = batch["id"]
+      {:ok, _} = PrintApi.collect_batch(p.memory, id, pre(~s("#{id}:1")))
+      file = %{name: "q.pdf", content_type: "application/pdf", bytes: Portal.pdf()}
+      input = %{amount_cents: cents, file: file}
+      {:ok, _} = PrintApi.submit_batch_quote(p.memory, id, input, pre(~s("#{id}:2")))
+      :ok = Memory.decide_batch_quote(p.memory, id, :approved)
+      {:ok, %{body: %{"batch" => approved}}} = PrintApi.get_batch(p.memory, id)
+      quote = %{quote_id: approved["currentQuote"]["id"]}
+      {:ok, _} = PrintApi.mark_batch_printed(p.memory, id, quote, pre(~s("#{id}:4")))
+      batch
     end
 
     test "the open month explains its date; the closed month takes the NF", %{
       portal: p,
       clock: clock
     } do
-      o = printed_order(p, 57_900)
+      batch = printed_batch(p, 57_900)
       {view, html} = live_page(p, "/invoices?competencia=2026-09")
 
-      for text <- ["Notas fiscais", "Competência", "Total calculado", "R$ 579,00", o["reference"]],
+      for text <- ["Notas fiscais", "Competência", "Total calculado", "R$ 579,00", "LOT-0001"],
           do: assert(html =~ text, text)
+
+      assert has_element?(view, ~s(a[href="/lotes/#{batch["id"]}"]), "LOT-0001")
 
       assert html =~ "O mês ainda não terminou. O envio da NF abre em 01/10/2026."
       refute has_element?(view, "#nf-form")
@@ -416,6 +92,26 @@ defmodule Frame.Integration.PortalLiveTest do
       assert html =~ "Baixar NF enviada"
     end
 
+    test "a v2 close lists batches and historical individual charges once each", %{
+      portal: p,
+      clock: clock
+    } do
+      Agent.update(clock, fn _ -> ~U[2026-10-02 12:00:00Z] end)
+      p = Portal.signed_in(Portal.fresh(p))
+      close = BatchFixture.monthly_close()
+      Memory.put_batch_close(p.memory, close)
+      [batch_item, legacy] = close["items"]
+
+      {view, html} = live_page(p, "/invoices?competencia=2026-09")
+      assert has_element?(view, ~s(a[href="/lotes/#{batch_item["batchId"]}"]), "LOT-0001")
+      assert html =~ legacy["reference"]
+      refute has_element?(view, "a", legacy["reference"])
+      assert html =~ "R$ 459,00"
+      assert html =~ "R$ 10,00"
+      assert html =~ "R$ 469,00"
+      assert has_element?(view, "#nf-form")
+    end
+
     test "switching the competence patches the URL", %{portal: p} do
       {view, _} = live_page(p, "/invoices")
       view |> form("#competence-form", %{"competencia" => "2026-07"}) |> render_change()
@@ -426,7 +122,7 @@ defmodule Frame.Integration.PortalLiveTest do
     test "refusals and silence", %{portal: p, clock: clock} do
       Agent.update(clock, fn _ -> ~U[2026-10-02 12:00:00Z] end)
       p = Portal.signed_in(Portal.fresh(p))
-      printed_order(p, 1000)
+      printed_batch(p, 1000)
       {view, _} = live_page(p, "/invoices?competencia=2026-10")
       # The current month: no form.
       refute has_element?(view, "#nf-form")
@@ -469,14 +165,15 @@ defmodule Frame.Integration.PortalLiveTest do
     test "without a session every page redirects to /login", %{portal: p} do
       anon = Portal.fresh(p)
 
-      for path <- ["/orders", "/orders/#{Ids.uuid()}", "/invoices"] do
+      for path <- ["/", "/lotes", "/lotes/#{Ids.uuid()}", "/invoices"] do
         assert {:error, {:redirect, %{to: "/login"}}} = live(Portal.conn(anon), path)
       end
     end
 
     test "logout revokes the session in the middle of a live page", %{portal: p} do
-      o = Portal.seed(p)
-      {view, _} = live_page(p, "/orders/#{o["id"]}")
+      batch = BatchFixture.batch("open")
+      BatchFixture.seed(p.memory, batch)
+      {view, _} = live_page(p, "/")
       {_p, out} = Portal.command(p, :delete, "/api/session")
       assert out.status == 204
 
@@ -484,18 +181,20 @@ defmodule Frame.Integration.PortalLiveTest do
       assert {:error, {:redirect, %{to: "/login"}}} =
                view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
 
-      assert order_status(p, o) == "ready"
+      {:ok, %{body: %{"batch" => %{"status" => "open"}}}} =
+        PrintApi.get_batch(p.memory, batch["id"])
     end
 
     test "an idle session expires in the middle of a live page" do
       {:ok, clock} = Agent.start_link(fn -> ~U[2026-09-10 12:00:00Z] end)
       p = Portal.start(clock: fn -> Agent.get(clock, & &1) end) |> Portal.signed_in()
-      {view, _} = live_page(p, "/orders")
+      BatchFixture.seed(p.memory, BatchFixture.batch("open"))
+      {view, _} = live_page(p, "/")
 
       Agent.update(clock, &DateTime.add(&1, 31 * 60))
 
       assert {:error, {:redirect, %{to: "/login"}}} =
-               view |> form("#orders-filter") |> render_submit()
+               view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
     end
 
     test "logout disconnects every live page of the session", %{portal: p} do

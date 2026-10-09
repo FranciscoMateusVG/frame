@@ -5,11 +5,10 @@ defmodule Frame.Web.LoginController do
 
     * `GET /login` — the form, bound to a pre-session (its CSRF token);
     * `POST /login` — exact Origin + pre-session CSRF; success rotates to a
-      brand-new session cookie and goes to `/orders`; a wrong password gets
+      brand-new session cookie and goes to `/` (the current batch); a wrong password gets
       the same answer every time (401), the limiter 429 + `Retry-After`;
     * `POST /logout` — exact Origin + session CSRF; revokes the session and
-      disconnects its live pages at once;
-    * `GET /` — to `/orders` or `/login`.
+      disconnects its live pages at once.
   """
 
   use Frame.Web, :controller
@@ -24,12 +23,8 @@ defmodule Frame.Web.LoginController do
   @form_limit 16_384
 
   @doc false
-  def root(conn, _params),
-    do: see_other(conn, if(conn.assigns.portal_session, do: "/orders", else: "/login"))
-
-  @doc false
   def new(%Plug.Conn{assigns: %{portal_session: %{}}} = conn, _params),
-    do: see_other(conn, "/orders")
+    do: see_other(conn, "/")
 
   def new(conn, _params) do
     deps = Deps.fetch(conn)
@@ -76,7 +71,7 @@ defmodule Frame.Web.LoginController do
     conn
     |> Security.put_cookie(Security.session_cookie(), session.id)
     |> Security.drop_cookie(Security.pre_session_cookie())
-    |> see_other("/orders")
+    |> see_other("/")
   end
 
   # The same answer for every wrong password; the limiter adds Retry-After.

@@ -40,19 +40,19 @@ defmodule Frame.Integration.PortalEdgesTest do
     assert no_origin.status == 403
 
     {p, ok} = send_post(p, "/login", form: %{"_csrf" => csrf, "password" => Portal.password()})
-    assert {ok.status, Portal.header(ok, "location")} == {303, ["/orders"]}
+    assert {ok.status, Portal.header(ok, "location")} == {303, ["/"]}
     assert p.jar["__Host-print_session"]
     refute p.jar["__Host-print_presession"]
 
-    {p, orders} = Portal.get(p, "/orders")
-    assert orders.status == 200
-    assert orders.raw =~ ~s(<meta name="csrf-token")
-    assert orders.raw =~ ~s(src="/assets/phoenix_live_view.min.js")
-    [_, csrf] = Regex.run(~r/name="_csrf" value="([^"]+)"/, orders.raw)
+    {p, home} = Portal.get(p, "/")
+    assert home.status == 200
+    assert home.raw =~ ~s(<meta name="csrf-token")
+    assert home.raw =~ ~s(src="/assets/phoenix_live_view.min.js")
+    [_, csrf] = Regex.run(~r/name="_csrf" value="([^"]+)"/, home.raw)
 
     {p, out} = send_post(p, "/logout", form: %{"_csrf" => csrf})
     assert {out.status, Portal.header(out, "location")} == {303, ["/login"]}
-    {_p, after_out} = Portal.get(p, "/orders")
+    {_p, after_out} = Portal.get(p, "/")
     assert {after_out.status, Portal.header(after_out, "location")} == {302, ["/login"]}
   end
 
@@ -77,17 +77,19 @@ defmodule Frame.Integration.PortalEdgesTest do
 
     p = Portal.signed_in(p)
     {_p, r} = Portal.get(p, "/")
-    assert Portal.header(r, "location") == ["/orders"]
+    assert r.status == 200
     {_p, r} = Portal.get(p, "/login")
-    assert Portal.header(r, "location") == ["/orders"]
+    assert Portal.header(r, "location") == ["/"]
 
-    {_p, r} = Portal.request(p, :put, "/orders")
+    {_p, r} = Portal.request(p, :put, "/lotes")
     assert {r.status, Portal.header(r, "allow")} == {405, ["GET"]}
     {_p, r} = Portal.request(p, :get, "/logout")
     assert {r.status, Portal.header(r, "allow")} == {405, ["POST"]}
 
-    # The old form endpoints are gone: commands run over the socket.
+    # The old form endpoints and per-order screens are gone: commands run over the socket.
     {_p, r} = send_post(p, "/orders/#{Ids.uuid()}/collected", form: %{})
+    assert r.status == 404
+    {_p, r} = Portal.get(p, "/orders")
     assert r.status == 404
     {_p, r} = Portal.get(p, "/nada")
     assert r.status == 404
@@ -139,7 +141,7 @@ defmodule Frame.Integration.PortalEdgesTest do
     assert r.status == 403
     {_p, r} = Portal.request(p, :post, "/logout", form: %{"_csrf" => p.csrf})
     assert r.status == 403
-    {_p, r} = Portal.get(p, "/orders")
+    {_p, r} = Portal.get(p, "/")
     assert r.status == 200
   end
 

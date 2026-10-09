@@ -134,10 +134,10 @@ input[type="file"] { font: inherit; padding: 0.4rem 0; max-width: 100%; }
   display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.88rem; font-weight: 650;
   background: var(--paper); border: 1px solid var(--rule); white-space: nowrap;
 }
-.status--ready { background: var(--cyan-wash); border-color: var(--cyan); color: var(--cyan-deep); }
+.status--open { background: var(--cyan-wash); border-color: var(--cyan); color: var(--cyan-deep); }
 .status--quote_pending, .status--close-submitted { background: var(--yellow-wash); border-color: var(--yellow); }
 .status--quote_rejected, .status--close-rejected { background: var(--magenta-wash); border-color: var(--magenta); color: var(--magenta); }
-.status--quote_approved, .status--printed, .status--close-accepted { background: var(--green-wash); border-color: var(--green); color: var(--green); }
+.status--quote_approved, .status--printed, .status--received, .status--close-accepted { background: var(--green-wash); border-color: var(--green); color: var(--green); }
 .status--cancelled { text-decoration: line-through; color: var(--ink-soft); }
 
 /* ── Orders table (stacks on phones) ──────────────────── */
@@ -204,6 +204,9 @@ input[type="file"] { font: inherit; padding: 0.4rem 0; max-width: 100%; }
 .track__step--current::before { border-color: var(--cyan); color: var(--cyan-deep); box-shadow: 0 0 0 4px var(--cyan-wash); }
 
 .jobs { margin-bottom: 1.5rem; }
+.request { margin-top: 1.5rem; }
+.request > h2 { margin: 0 0 0.6rem; overflow-wrap: anywhere; }
+.general-instructions { margin-top: 0.75rem; }
 .jobs__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
 .job { border: 1px solid var(--rule); border-radius: var(--radius); padding: 1rem; background: var(--paper); }
 .job__head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; }

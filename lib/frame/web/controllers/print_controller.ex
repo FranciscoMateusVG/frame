@@ -1,7 +1,9 @@
 defmodule Frame.Web.PrintController do
   @moduledoc """
   `/api/print/v1/...` (spec §4.5): the ten service routes of §4.3 with the
-  session cookie instead of the bearer token.
+  session cookie instead of the bearer token; and `/api/print/v2/...`: the
+  batch downloads (member files, current quote, monthly NF) the batch
+  pages link to.
 
   Every route needs a live session (401 `UNAUTHENTICATED`); commands also
   need the exact Origin and `X-CSRF-Token` (403 `CSRF_FAILED`). `If-Match`
@@ -117,6 +119,27 @@ defmodule Frame.Web.PrintController do
         input = Map.put(fields, :file, file)
         respond(conn, UseCases.SubmitInvoice.submit_invoice(Deps.fetch(conn), c, input, pre))
       end)
+    end)
+  end
+
+  @doc false
+  def batch_file(conn, %{"id" => id, "order_id" => order_id, "file_id" => file_id}) do
+    with_ids(conn, [id, order_id, file_id], fn [id, order_id, file_id] ->
+      Reply.download(conn, Deps.fetch(conn), {:batch_file, id, order_id, file_id})
+    end)
+  end
+
+  @doc false
+  def batch_quote_file(conn, %{"id" => id, "quote_id" => quote_id}) do
+    with_ids(conn, [id, quote_id], fn [id, quote_id] ->
+      Reply.download(conn, Deps.fetch(conn), {:batch_quote_file, id, quote_id})
+    end)
+  end
+
+  @doc false
+  def batch_invoice_file(conn, %{"competence" => competence}) do
+    with_competence(conn, competence, fn c ->
+      Reply.download(conn, Deps.fetch(conn), {:batch_invoice_file, c})
     end)
   end
 

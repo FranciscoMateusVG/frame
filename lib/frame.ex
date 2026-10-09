@@ -5,7 +5,7 @@ defmodule Frame do
   Elixir has no per-module export control, so the "public surface" is a
   convention, documented here and enforced by `mix frame.depcruise`:
 
-    * **Domain:** `Frame.Domain.{Order, Close, Contract, Competence, Money,
+    * **Domain:** `Frame.Domain.{Order, Batch, Close, Contract, Competence, Money,
       Document, Requests, Session, LoginThrottle}` (pure)
     * **Ports:** `Frame.Adapters.{PrintApi, SessionStore, LoginLimiter}`
     * **Errors:** `Frame.Errors.PortalError`

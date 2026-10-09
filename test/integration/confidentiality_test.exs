@@ -13,6 +13,7 @@ defmodule Frame.Integration.ConfidentialityTest do
   alias Frame.Adapters.PrintApi.Memory
   alias Frame.Observability.Observability
   alias Frame.Observability.OtelLogger
+  alias Frame.Test.BatchFixture
 
   defmodule RaisingApi do
     @moduledoc false
@@ -25,6 +26,8 @@ defmodule Frame.Integration.ConfidentialityTest do
     def get_order(%{inner: nil}, _id), do: raise("MARKER-crash-detail")
     def get_order(%{inner: inner}, id), do: PrintApi.get_order(inner, id)
     def collect(_api, _id, _input, _pre), do: raise("MARKER-crash-detail")
+    def get_open_batch(%{inner: inner}), do: PrintApi.get_open_batch(inner)
+    def collect_batch(_api, _id, _pre), do: raise("MARKER-crash-detail")
   end
 
   setup_all do
@@ -47,6 +50,26 @@ defmodule Frame.Integration.ConfidentialityTest do
   @instructions "MARKERINSTRUCAO frente e verso"
   @filename "MARKERARQUIVO.pdf"
   @doc_bytes "%PDF-1.4 MARKERCONTEUDO"
+
+  # LOT-0001 (open) whose first file carries the instruction, name and byte markers.
+  defp marker_batch(memory) do
+    batch = BatchFixture.batch("open")
+    BatchFixture.seed(memory, batch)
+    [item] = batch["items"]
+    [job | jobs] = item["jobs"]
+
+    file = %{
+      job["file"]
+      | "name" => @filename,
+        "bytes" => byte_size(@doc_bytes),
+        "sha256" => :crypto.hash(:sha256, @doc_bytes) |> Base.encode16(case: :lower)
+    }
+
+    job = %{job | "instructions" => @instructions, "file" => file}
+    batch = %{batch | "items" => [%{item | "jobs" => [job | jobs]}]}
+    Memory.put_batch(memory, batch, %{file["id"] => {@filename, "application/pdf", @doc_bytes}})
+    {batch, item["orderId"], file["id"]}
+  end
 
   test "no secret or content marker leaks into spans, logs or error bodies", %{portal: p, obs: obs} do
     log =
@@ -142,20 +165,16 @@ defmodule Frame.Integration.ConfidentialityTest do
             headers: [{"origin", p.origin}]
           )
 
-        # The LiveView pages: the order on screen, a command and an upload
-        # over the socket with a marker file name and bytes.
-        o2 =
-          Memory.seed_order(p.memory, [
-            %{
-              title: "Outro",
-              copies: 1,
-              instructions: @instructions,
-              file_name: @filename,
-              bytes: @doc_bytes
-            }
-          ])
+        # The batch page: the batch on screen, a file download, a command
+        # and an upload over the socket with a marker file name and bytes.
+        {batch, order_id, file_id} = marker_batch(p.memory)
 
-        {:ok, view, html} = live(Portal.conn(p), "/orders/#{o2["id"]}")
+        {_p, download} =
+          Portal.get(p, "/api/print/v2/batches/#{batch["id"]}/orders/#{order_id}/files/#{file_id}")
+
+        assert download.raw == @doc_bytes
+
+        {:ok, view, html} = live(Portal.conn(p), "/")
         assert html =~ "MARKERINSTRUCAO"
         view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
         view |> element("#confirm-collect button", "Confirmar retirada") |> render_click()
@@ -218,12 +237,18 @@ defmodule Frame.Integration.ConfidentialityTest do
           "logIn",
           "submitQuote",
           "collectFiles",
-          "live Frame.Web.OrderLive handle_event"
+          "getCurrentBatch",
+          "http.print_api.getOpenBatch",
+          "HTTP GET /api/print/v2/batches/:id/orders/:order_id/files/:file_id",
+          "collectBatch",
+          "submitBatchQuote",
+          "live Frame.Web.BatchLive handle_event"
         ],
         do: assert(name in names, name)
 
     assert log =~ "http.request"
     assert log =~ "order.quote_submitted"
+    assert log =~ "batch.quote_submitted"
   end
 
   test "an unexpected crash is a 500 INTERNAL without details", %{obs: obs} do
@@ -262,24 +287,14 @@ defmodule Frame.Integration.ConfidentialityTest do
       )
       |> Portal.signed_in()
 
-    o =
-      Memory.seed_order(p.memory, [
-        %{
-          title: "Trabalho",
-          copies: 1,
-          instructions: @instructions,
-          file_name: @filename,
-          bytes: @doc_bytes
-        }
-      ])
-
+    marker_batch(p.memory)
     p = %{p | deps: %{p.deps | print_api: %RaisingApi{inner: p.deps.print_api}}}
     Frame.Test.Observability.reset(obs)
     Process.flag(:trap_exit, true)
 
     log =
       capture_log([level: :debug], fn ->
-        {:ok, view, _html} = live(Portal.conn(p), "/orders/#{o["id"]}")
+        {:ok, view, _html} = live(Portal.conn(p), "/")
         view |> form("#collect-form", %{"conferi" => "on"}) |> render_submit()
 
         catch_exit(
@@ -297,7 +312,7 @@ defmodule Frame.Integration.ConfidentialityTest do
         do: refute(log =~ marker, "crash log leaks #{inspect(marker)}")
 
     spans = Frame.Test.Observability.get_spans(obs)
-    events = Enum.filter(spans, &(&1.name == "live Frame.Web.OrderLive handle_event"))
+    events = Enum.filter(spans, &(&1.name == "live Frame.Web.BatchLive handle_event"))
     assert Enum.any?(events, &(&1.attributes[:"error.type"] == "RuntimeError"))
     refute inspect(spans, limit: :infinity, printable_limit: :infinity) =~ "MARKER"
   end

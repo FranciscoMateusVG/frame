@@ -6,7 +6,8 @@ defmodule Frame.Test.PrintApiConformance do
   `PrintApi.Memory` holding the state (the adapter itself, or the one
   behind a FakeHono) and `clock` an Agent holding the fake's current time.
 
-  The tests are grouped in three macros (orders, workflow, monthly close);
+  The tests are grouped in macros (orders, workflow, monthly close, v2
+  batches, v2 batch documents);
   their shared helpers live in `Frame.Test.PrintApiConformance.Helpers`.
   """
 
@@ -26,6 +27,8 @@ defmodule Frame.Test.PrintApiConformance do
       unquote(__MODULE__).order_tests()
       unquote(__MODULE__).workflow_tests()
       unquote(__MODULE__).close_tests()
+      unquote(__MODULE__).batch_tests()
+      unquote(__MODULE__).batch_document_tests()
     end
   end
 
@@ -320,6 +323,219 @@ defmodule Frame.Test.PrintApiConformance do
       end
     end
   end
+
+  @doc false
+  defmacro batch_tests do
+    quote do
+      alias Frame.Adapters.PrintApi
+      alias Frame.Adapters.PrintApi.Memory
+      alias Frame.Adapters.PrintApi.Response
+      alias Frame.Test.BatchFixture
+      alias Frame.Test.Ids
+
+      test "v2: the open batch is null without a current batch, else the batch with its ETag", %{
+        api: api,
+        memory: m
+      } do
+        {:ok, %Response{status: 200, etag: nil, body: %{"batch" => nil}}} =
+          PrintApi.get_open_batch(api)
+
+        BatchFixture.seed(m, BatchFixture.batch("open"))
+        open = BatchFixture.batch("open")
+
+        {:ok, %Response{status: 200, etag: etag, body: %{"batch" => got}}} =
+          PrintApi.get_open_batch(api)
+
+        assert got == open
+        assert etag == ~s("#{open["id"]}:1")
+
+        {:ok, %Response{status: 200, etag: ^etag, body: %{"batch" => ^got}}} =
+          PrintApi.get_batch(api, open["id"])
+
+        {:ok, missing} = PrintApi.get_batch(api, Ids.uuid())
+        assert {missing.status, code(missing)} == {404, "NOT_FOUND"}
+      end
+
+      test "v2: /open is null while a collected…printed batch is active", %{api: api, memory: m} do
+        for status <- ~w(files_collected quote_pending quote_rejected quote_approved printed) do
+          Memory.put_batch(m, BatchFixture.batch(status), %{})
+
+          {:ok, %Response{status: 200, etag: nil, body: %{"batch" => nil}}} =
+            PrintApi.get_open_batch(api)
+        end
+
+        # LOT-0001 received: LOT-0002 is open; collecting it takes it out of /open.
+        Memory.put_batch(m, BatchFixture.batch("received"), %{})
+        Memory.put_batch(m, BatchFixture.next_batch(), %{})
+        open_id = BatchFixture.next_batch()["id"]
+        {:ok, %Response{body: %{"batch" => %{"id" => ^open_id}}}} = PrintApi.get_open_batch(api)
+        {:ok, _} = PrintApi.collect_batch(api, open_id, pre(~s("#{open_id}:1")))
+        {:ok, %Response{body: %{"batch" => nil}}} = PrintApi.get_open_batch(api)
+      end
+
+      test "v2: history lists every batch as summaries, createdAt/id order, keyset cursor", %{
+        api: api,
+        memory: m
+      } do
+        received = BatchFixture.batch("received")
+        next = BatchFixture.next_batch()
+        BatchFixture.seed(m, [next, received])
+
+        {:ok, %Response{status: 200, body: %{"items" => [first], "nextCursor" => cursor}}} =
+          PrintApi.list_batches(api, %{limit: 1})
+
+        assert first == Map.drop(received, ["items", "currentQuote", "cancellationReason"])
+
+        {:ok, %Response{body: %{"items" => [second], "nextCursor" => nil}}} =
+          PrintApi.list_batches(api, %{limit: 1, cursor: cursor})
+
+        assert second["id"] == next["id"]
+
+        {:ok, %Response{body: %{"items" => [only]}}} =
+          PrintApi.list_batches(api, %{status: "received"})
+
+        assert only["id"] == received["id"]
+        {:ok, bad} = PrintApi.list_batches(api, %{cursor: "garbage"})
+        assert {bad.status, code(bad)} == {400, "INVALID_CURSOR"}
+
+        # The received batch is history: the open one is LOT-0002.
+        {:ok, %Response{body: %{"batch" => %{"reference" => "LOT-0002"}}}} =
+          PrintApi.get_open_batch(api)
+      end
+
+      test "v2: collect, quote, rejection, approval and printed — ETags and idempotency", %{
+        api: api,
+        memory: m
+      } do
+        open = BatchFixture.batch("open")
+        BatchFixture.seed(m, open)
+        id = open["id"]
+
+        {:ok, r} = PrintApi.collect_batch(api, id, %{if_match: nil, idempotency_key: nil})
+        assert {r.status, code(r)} == {428, "PRECONDITION_REQUIRED"}
+        {:ok, r} = PrintApi.collect_batch(api, id, pre(~s("#{id}:9")))
+        assert {r.status, code(r)} == {412, "VERSION_MISMATCH"}
+
+        key = Ids.uuid()
+        {:ok, collected} = PrintApi.collect_batch(api, id, pre(~s("#{id}:1"), key))
+        assert collected.status == 200
+        assert collected.etag == ~s("#{id}:2")
+        assert collected.body["batch"]["status"] == "files_collected"
+        assert collected.body["batch"]["items"] == open["items"]
+
+        {:ok, replay} = PrintApi.collect_batch(api, id, pre(~s("#{id}:1"), key))
+        assert {replay.status, replay.replayed, replay.body} == {200, true, collected.body}
+
+        {:ok, r} = batch_quote(api, id, 2, 45_900, key)
+        assert {r.status, code(r)} == {409, "IDEMPOTENCY_CONFLICT"}
+
+        {:ok, r} =
+          PrintApi.mark_batch_printed(api, id, %{quote_id: Ids.uuid()}, pre(collected.etag))
+
+        assert {r.status, code(r)} == {409, "INVALID_STATE"}
+
+        {:ok, quoted} = batch_quote(api, id, 2, 45_900)
+        assert quoted.status == 201
+        assert quoted.body["batch"]["status"] == "quote_pending"
+        quote = quoted.body["batch"]["currentQuote"]
+
+        assert {quote["amountCents"], quote["revision"], quote["decision"]} ==
+                 {45_900, 1, "pending"}
+
+        {:streamed, doc} = collect_bytes(api, {:batch_quote_file, id, quote["id"]})
+        assert doc.data == @pdf <> "q45900"
+
+        :ok = Memory.decide_batch_quote(m, id, {:rejected, "Corrigir quantidade total"})
+        {:ok, %Response{body: %{"batch" => rejected}, etag: etag}} = PrintApi.get_batch(api, id)
+        assert rejected["status"] == "quote_rejected"
+        assert rejected["currentQuote"]["rejectionReason"] == "Corrigir quantidade total"
+
+        {:ok, requoted} = batch_quote(api, id, 4, 46_000)
+        assert requoted.body["batch"]["currentQuote"]["revision"] == 2
+        assert etag == ~s("#{id}:4")
+
+        :ok = Memory.decide_batch_quote(m, id, :approved)
+        {:ok, %Response{body: %{"batch" => approved}, etag: etag}} = PrintApi.get_batch(api, id)
+        assert {approved["status"], approved["approvedAmountCents"]} == {"quote_approved", 46_000}
+        qid = approved["currentQuote"]["id"]
+
+        {:ok, r} = PrintApi.mark_batch_printed(api, id, %{quote_id: Ids.uuid()}, pre(etag))
+        assert {r.status, code(r)} == {409, "INVALID_STATE"}
+
+        {:ok, printed} = PrintApi.mark_batch_printed(api, id, %{quote_id: qid}, pre(etag))
+        assert printed.status == 200
+        assert printed.body["batch"]["status"] == "printed"
+        assert is_binary(printed.body["batch"]["printedAt"])
+      end
+    end
+  end
+
+  @doc false
+  defmacro batch_document_tests do
+    quote do
+      alias Frame.Adapters.PrintApi
+      alias Frame.Adapters.PrintApi.Memory
+      alias Frame.Test.BatchFixture
+      alias Frame.Test.Ids
+
+      test "v2: an empty open batch is not collectable", %{api: api, memory: m} do
+        empty = %{BatchFixture.batch("open") | "items" => [], "itemCount" => 0}
+        Memory.put_batch(m, empty, %{})
+        {:ok, r} = PrintApi.collect_batch(api, empty["id"], pre(~s("#{empty["id"]}:1")))
+        assert {r.status, code(r)} == {409, "EMPTY_BATCH"}
+      end
+
+      test "v2: every file of a member downloads byte-exact; foreign ids are 404", %{
+        api: api,
+        memory: m
+      } do
+        batch = BatchFixture.rebatched()
+        BatchFixture.seed(m, batch)
+
+        for item <- batch["items"], file <- BatchFixture.files(%{batch | "items" => [item]}) do
+          {:streamed, got} =
+            collect_bytes(api, {:batch_file, batch["id"], item["orderId"], file["id"]})
+
+          assert got.data == BatchFixture.asset(file["id"])
+          assert got.headers["content-length"] == Integer.to_string(file["bytes"])
+          assert got.headers["content-type"] == "application/pdf"
+        end
+
+        [first, second] = batch["items"]
+        foreign = hd(second["jobs"])["file"]["id"]
+
+        for target <- [
+              {:batch_file, batch["id"], first["orderId"], foreign},
+              {:batch_file, Ids.uuid(), first["orderId"], foreign},
+              {:batch_quote_file, batch["id"], Ids.uuid()}
+            ] do
+          {:ok, r} = collect_bytes(api, target)
+          assert r.status == 404
+        end
+      end
+
+      test "v2: monthly close — virtual, mixed items, submit", %{api: api, memory: m, clock: clock} do
+        Agent.update(clock, fn _ -> ~U[2026-10-15 15:00:00Z] end)
+        {:ok, virtual} = PrintApi.get_batch_close(api, "2026-08")
+        assert virtual.etag == ~s("month:2026-08:0")
+        assert virtual.body["close"]["items"] == []
+
+        close = BatchFixture.monthly_close()
+        Memory.put_batch_close(m, close)
+        {:ok, got} = PrintApi.get_batch_close(api, "2026-09")
+        assert got.body["close"] == close
+        assert got.etag == ~s("#{close["id"]}:#{close["version"]}")
+
+        nf = %{name: "NF setembro.pdf", content_type: "application/pdf", bytes: @pdf <> "nf"}
+        input = %{declared_total_cents: 46_900, file: nf}
+        {:ok, sub} = PrintApi.submit_batch_invoice(api, "2026-09", input, pre(got.etag))
+        assert {sub.status, sub.body["close"]["state"]} == {201, "submitted"}
+
+        {:streamed, doc} = collect_bytes(api, {:batch_invoice_file, "2026-09"})
+        assert doc.data == @pdf <> "nf"
+      end
+    end
+  end
 end
 
 defmodule Frame.Test.PrintApiConformance.Helpers do
@@ -369,6 +585,12 @@ defmodule Frame.Test.PrintApiConformance.Helpers do
     file = %{name: "orçamento.pdf", content_type: "application/pdf", bytes: @pdf <> "q#{cents}"}
     input = %{amount_cents: cents, order_revision: 1, file: file}
     PrintApi.submit_quote(api, order["id"], input, pre(~s("#{order["id"]}:#{version}")))
+  end
+
+  def batch_quote(api, batch_id, version, cents, key \\ Ids.uuid()) do
+    file = %{name: "orçamento.pdf", content_type: "application/pdf", bytes: @pdf <> "q#{cents}"}
+    input = %{amount_cents: cents, file: file}
+    PrintApi.submit_batch_quote(api, batch_id, input, pre(~s("#{batch_id}:#{version}"), key))
   end
 
   def collect_bytes(api, target) do

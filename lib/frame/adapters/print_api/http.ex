@@ -1,6 +1,7 @@
 defmodule Frame.Adapters.PrintApi.Http do
   @moduledoc """
-  PrintApi over HTTP to the Incluir Hono API, with Finch.
+  PrintApi over HTTP to the Incluir Hono API (`/api/print-portal/v1` and
+  the batch contract `/api/print-portal/v2`), with Finch.
 
   Security properties (spec §5):
 
@@ -28,7 +29,7 @@ defmodule Frame.Adapters.PrintApi.Http do
   alias Frame.Domain.Contract
   alias OpenTelemetry.Span
 
-  @prefix "/api/print-portal/v1"
+  @prefix "/api/print-portal"
   @max_json_bytes 2 * 1024 * 1024
   @max_download_bytes 64 * 1024 * 1024
 
@@ -53,18 +54,13 @@ defmodule Frame.Adapters.PrintApi.Http do
 
   @impl true
   def list_orders(api, query) do
-    params =
-      query
-      |> Enum.sort()
-      |> Enum.map(fn {k, v} -> {Atom.to_string(k), to_string(v)} end)
-
-    path = "/orders" <> if(params == [], do: "", else: "?" <> URI.encode_query(params))
-    json(api, "listOrders", :get, path, "/orders", nil, :order_list_response)
+    path = "/v1/orders" <> query_string(query)
+    json(api, "listOrders", :get, path, "/v1/orders", nil, :order_list_response)
   end
 
   @impl true
   def get_order(api, id),
-    do: json(api, "getOrder", :get, "/orders/#{seg(id)}", "/orders/:id", nil, :order_response)
+    do: json(api, "getOrder", :get, "/v1/orders/#{seg(id)}", "/v1/orders/:id", nil, :order_response)
 
   @impl true
   def collect(api, id, %{revision: revision}, pre) do
@@ -74,8 +70,8 @@ defmodule Frame.Adapters.PrintApi.Http do
       api,
       "collectFiles",
       :post,
-      "/orders/#{seg(id)}/collected",
-      "/orders/:id/collected",
+      "/v1/orders/#{seg(id)}/collected",
+      "/v1/orders/:id/collected",
       {body, pre},
       :order_response
     )
@@ -89,8 +85,8 @@ defmodule Frame.Adapters.PrintApi.Http do
       api,
       "markPrinted",
       :post,
-      "/orders/#{seg(id)}/printed",
-      "/orders/:id/printed",
+      "/v1/orders/#{seg(id)}/printed",
+      "/v1/orders/:id/printed",
       {body, pre},
       :order_response
     )
@@ -107,8 +103,8 @@ defmodule Frame.Adapters.PrintApi.Http do
       api,
       "submitQuote",
       :post,
-      "/orders/#{seg(id)}/quotes",
-      "/orders/:id/quotes",
+      "/v1/orders/#{seg(id)}/quotes",
+      "/v1/orders/:id/quotes",
       {multipart(fields, input.file), pre},
       :order_response
     )
@@ -120,8 +116,8 @@ defmodule Frame.Adapters.PrintApi.Http do
       api,
       "getMonthlyClose",
       :get,
-      "/monthly-closes/#{seg(competence)}",
-      "/monthly-closes/:competence",
+      "/v1/monthly-closes/#{seg(competence)}",
+      "/v1/monthly-closes/:competence",
       nil,
       :close_response
     )
@@ -135,10 +131,105 @@ defmodule Frame.Adapters.PrintApi.Http do
       api,
       "submitInvoice",
       :post,
-      "/monthly-closes/#{seg(competence)}/invoice",
-      "/monthly-closes/:competence/invoice",
+      "/v1/monthly-closes/#{seg(competence)}/invoice",
+      "/v1/monthly-closes/:competence/invoice",
       {multipart(fields, input.file), pre},
       :close_response
+    )
+  end
+
+  # --- v2: batches ---
+
+  @impl true
+  def get_open_batch(api),
+    do:
+      json(
+        api,
+        "getOpenBatch",
+        :get,
+        "/v2/batches/open",
+        "/v2/batches/open",
+        nil,
+        :open_batch_response
+      )
+
+  @impl true
+  def list_batches(api, query) do
+    path = "/v2/batches" <> query_string(query)
+    json(api, "listBatches", :get, path, "/v2/batches", nil, :batch_list_response)
+  end
+
+  @impl true
+  def get_batch(api, id),
+    do:
+      json(api, "getBatch", :get, "/v2/batches/#{seg(id)}", "/v2/batches/:id", nil, :batch_response)
+
+  @impl true
+  def collect_batch(api, id, pre) do
+    json(
+      api,
+      "collectBatch",
+      :post,
+      "/v2/batches/#{seg(id)}/collected",
+      "/v2/batches/:id/collected",
+      {{"application/json", "{}"}, pre},
+      :batch_response
+    )
+  end
+
+  @impl true
+  def submit_batch_quote(api, id, input, pre) do
+    fields = [{"amountCents", Integer.to_string(input.amount_cents)}]
+
+    json(
+      api,
+      "submitBatchQuote",
+      :post,
+      "/v2/batches/#{seg(id)}/quotes",
+      "/v2/batches/:id/quotes",
+      {multipart(fields, input.file), pre},
+      :batch_response
+    )
+  end
+
+  @impl true
+  def mark_batch_printed(api, id, %{quote_id: quote_id}, pre) do
+    json(
+      api,
+      "markBatchPrinted",
+      :post,
+      "/v2/batches/#{seg(id)}/printed",
+      "/v2/batches/:id/printed",
+      {{"application/json", JSON.encode!(%{quoteId: quote_id})}, pre},
+      :batch_response
+    )
+  end
+
+  @impl true
+  def get_batch_close(api, competence) do
+    json(
+      api,
+      "getBatchMonthlyClose",
+      :get,
+      "/v2/monthly-closes/#{seg(competence)}",
+      "/v2/monthly-closes/:competence",
+      nil,
+      :batch_close_response
+    )
+  end
+
+  @impl true
+  def submit_batch_invoice(api, competence, input, pre) do
+    fields = [{"declaredTotalCents", Integer.to_string(input.declared_total_cents)}]
+
+    json(
+      api,
+      "submitBatchInvoice",
+      :post,
+      "/v2/monthly-closes/#{seg(competence)}/invoice",
+      "/v2/monthly-closes/:competence/invoice",
+      {multipart(fields, input.file), pre},
+      :batch_close_response
     )
   end
 
@@ -163,14 +254,28 @@ defmodule Frame.Adapters.PrintApi.Http do
   # --- downloads ---
 
   defp download_path({:order_file, order_id, file_id}),
-    do: {"/orders/#{seg(order_id)}/files/#{seg(file_id)}", "/orders/:id/files/:fileId"}
+    do: {"/v1/orders/#{seg(order_id)}/files/#{seg(file_id)}", "/v1/orders/:id/files/:fileId"}
 
   defp download_path({:quote_file, order_id, quote_id}),
     do:
-      {"/orders/#{seg(order_id)}/quotes/#{seg(quote_id)}/file", "/orders/:id/quotes/:quoteId/file"}
+      {"/v1/orders/#{seg(order_id)}/quotes/#{seg(quote_id)}/file",
+       "/v1/orders/:id/quotes/:quoteId/file"}
 
   defp download_path({:invoice_file, competence}),
-    do: {"/monthly-closes/#{seg(competence)}/invoice", "/monthly-closes/:competence/invoice"}
+    do: {"/v1/monthly-closes/#{seg(competence)}/invoice", "/v1/monthly-closes/:competence/invoice"}
+
+  defp download_path({:batch_file, batch_id, order_id, file_id}),
+    do:
+      {"/v2/batches/#{seg(batch_id)}/orders/#{seg(order_id)}/files/#{seg(file_id)}",
+       "/v2/batches/:id/orders/:orderId/files/:fileId"}
+
+  defp download_path({:batch_quote_file, batch_id, quote_id}),
+    do:
+      {"/v2/batches/#{seg(batch_id)}/quotes/#{seg(quote_id)}/file",
+       "/v2/batches/:id/quotes/:quoteId/file"}
+
+  defp download_path({:batch_invoice_file, competence}),
+    do: {"/v2/monthly-closes/#{seg(competence)}/invoice", "/v2/monthly-closes/:competence/invoice"}
 
   defp download_step({:status, status}, st, _sink), do: {:cont, %{st | status: status}}
 
@@ -364,6 +469,15 @@ defmodule Frame.Adapters.PrintApi.Http do
   defp precondition_headers(pre) do
     [{"if-match", pre[:if_match]}, {"idempotency-key", pre[:idempotency_key]}]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp query_string(query) do
+    params =
+      query
+      |> Enum.sort()
+      |> Enum.map(fn {k, v} -> {Atom.to_string(k), to_string(v)} end)
+
+    if params == [], do: "", else: "?" <> URI.encode_query(params)
   end
 
   # Path segments are validated upstream of this module; encode anyway.
