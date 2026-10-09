@@ -1,9 +1,9 @@
-//! Port to the Incluir print-portal service API (`/api/print-portal/v1`).
+//! Port to the Incluir print-portal service API (`/api/print-portal/v2`).
 //! Implementations: `frame-portal-hono` (real HTTP) and `frame-portal-memory`
 //! (in-memory fake with the same contract). No observability dependency.
 use async_trait::async_trait;
 use bytes::Bytes;
-use frame_portal_domain::{Close, Competence, Order, OrderList, OrderStatus};
+use frame_portal_domain::{Batch, BatchList, BatchStatus, Close, Competence};
 use futures_util::stream::BoxStream;
 use std::fmt;
 
@@ -15,6 +15,9 @@ pub mod codes {
     pub const NOT_FOUND: &str = "NOT_FOUND";
     pub const METHOD_NOT_ALLOWED: &str = "METHOD_NOT_ALLOWED";
     pub const INVALID_STATE: &str = "INVALID_STATE";
+    pub const BATCH_NOT_ACTIVE: &str = "BATCH_NOT_ACTIVE";
+    pub const BATCH_WORKFLOW_REQUIRED: &str = "BATCH_WORKFLOW_REQUIRED";
+    pub const EMPTY_BATCH: &str = "EMPTY_BATCH";
     pub const IDEMPOTENCY_CONFLICT: &str = "IDEMPOTENCY_CONFLICT";
     pub const OPERATION_IN_PROGRESS: &str = "OPERATION_IN_PROGRESS";
     pub const PERIOD_OPEN: &str = "PERIOD_OPEN";
@@ -75,7 +78,7 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ListQuery {
-    pub status: Option<OrderStatus>,
+    pub status: Option<BatchStatus>,
     pub limit: Option<u32>,
     pub cursor: Option<String>,
 }
@@ -126,31 +129,32 @@ impl fmt::Debug for Download {
 
 #[async_trait]
 pub trait PrintApi: Send + Sync {
-    async fn list_orders(&self, query: &ListQuery) -> ApiResult<OrderList>;
-    async fn get_order(&self, order_id: &str) -> ApiResult<Tagged<Order>>;
-    async fn order_file(&self, order_id: &str, file_id: &str) -> ApiResult<Download>;
-    async fn collect(
+    /// All batches (history included), `createdAt ASC, id ASC`.
+    async fn list_batches(&self, query: &ListQuery) -> ApiResult<BatchList>;
+    /// The open batch, or `None` (also while a collected…printed one is active).
+    async fn open_batch(&self) -> ApiResult<Option<Tagged<Batch>>>;
+    async fn get_batch(&self, batch_id: &str) -> ApiResult<Tagged<Batch>>;
+    async fn batch_file(
         &self,
+        batch_id: &str,
         order_id: &str,
-        revision: u64,
-        pre: &Preconditions,
-    ) -> ApiResult<Command<Order>>;
+        file_id: &str,
+    ) -> ApiResult<Download>;
+    async fn collect(&self, batch_id: &str, pre: &Preconditions) -> ApiResult<Command<Batch>>;
     async fn submit_quote(
         &self,
-        order_id: &str,
+        batch_id: &str,
         amount_cents: i64,
-        order_revision: u64,
         file: Upload,
         pre: &Preconditions,
-    ) -> ApiResult<Command<Order>>;
-    async fn quote_file(&self, order_id: &str, quote_id: &str) -> ApiResult<Download>;
+    ) -> ApiResult<Command<Batch>>;
+    async fn quote_file(&self, batch_id: &str, quote_id: &str) -> ApiResult<Download>;
     async fn mark_printed(
         &self,
-        order_id: &str,
-        revision: u64,
+        batch_id: &str,
         quote_id: &str,
         pre: &Preconditions,
-    ) -> ApiResult<Command<Order>>;
+    ) -> ApiResult<Command<Batch>>;
     async fn get_close(&self, competence: Competence) -> ApiResult<Tagged<Close>>;
     async fn submit_invoice(
         &self,

@@ -1,5 +1,5 @@
 //! A fake Incluir Hono on a real socket: the upstream HTTP shapes of
-//! `/api/print-portal/v1` (bearer check, ETag, Idempotency-Replayed,
+//! `/api/print-portal/v2` (bearer check, ETag, Idempotency-Replayed,
 //! Retry-After, error envelope, download headers) served from the
 //! in-memory fake. Lets the real HTTP adapter run the shared conformance
 //! suite through an actual network boundary. Fault hooks simulate delay,
@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use frame_portal_domain::{Competence, OrderStatus, content_disposition};
+use frame_portal_domain::{BatchStatus, Competence, content_disposition};
 use frame_portal_memory::PrintApiMemory;
 use frame_portal_port::{ApiError, Command, Download, ListQuery, Preconditions, PrintApi, Upload};
 use serde::Serialize;
@@ -93,7 +93,7 @@ async fn gate(up: &Upstream, headers: &HeaderMap) -> Option<Response> {
             (
                 StatusCode::OK,
                 [(header::ETAG, "\"x:1\"")],
-                Json(json!({"order": {"id": "not-a-uuid"}, "items": [], "nextCursor": null, "close": 1})),
+                Json(json!({"batch": {"id": "not-a-uuid"}, "items": [], "nextCursor": null, "close": 1})),
             )
                 .into_response(),
         ),
@@ -163,7 +163,7 @@ async fn list(
 ) -> Response {
     guard!(up, headers);
     let status = match q.get("status") {
-        Some(s) => match OrderStatus::parse(s) {
+        Some(s) => match BatchStatus::parse(s) {
             Some(s) => Some(s),
             None => return error_body(400, "INVALID_REQUEST", "Requisição inválida."),
         },
@@ -179,41 +179,36 @@ async fn list(
         limit,
         cursor: q.get("cursor").cloned(),
     };
-    match up.api.list_orders(&query).await {
+    match up.api.list_batches(&query).await {
         Ok(l) => Json(l).into_response(),
         Err(e) => api_error(e),
     }
 }
 
-async fn order(State(up): S, headers: HeaderMap, Path(id): Path<String>) -> Response {
+async fn open(State(up): S, headers: HeaderMap) -> Response {
     guard!(up, headers);
-    match up.api.get_order(&id).await {
-        Ok(t) => {
-            let mut body = serde_json::to_value(t.body).unwrap();
-            if up.faults.mode.load(Ordering::SeqCst) == 4 {
-                let files: Vec<Value> = body["jobs"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|j| j["file"].clone())
-                    .collect();
-                body["generalInstructions"] =
-                    json!({"text":"Texto integral\n<script>alert(1)</script>", "files":files});
-                body["jobs"] = json!([]);
-            }
-            tagged("order", body, &t.etag)
-        }
+    match up.api.open_batch().await {
+        Ok(Some(t)) => tagged("batch", t.body, &t.etag),
+        Ok(None) => Json(json!({ "batch": null })).into_response(),
         Err(e) => api_error(e),
     }
 }
 
-async fn order_file(
+async fn batch(State(up): S, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    guard!(up, headers);
+    match up.api.get_batch(&id).await {
+        Ok(t) => tagged("batch", t.body, &t.etag),
+        Err(e) => api_error(e),
+    }
+}
+
+async fn batch_file(
     State(up): S,
     headers: HeaderMap,
-    Path((id, f)): Path<(String, String)>,
+    Path((id, o, f)): Path<(String, String, String)>,
 ) -> Response {
     guard!(up, headers);
-    match up.api.order_file(&id, &f).await {
+    match up.api.batch_file(&id, &o, &f).await {
         Ok(d) => download(d),
         Err(e) => api_error(e),
     }
@@ -238,11 +233,11 @@ async fn collected(
     Json(body): Json<Value>,
 ) -> Response {
     guard!(up, headers);
-    let Some(revision) = body["revision"].as_u64() else {
+    if body != json!({}) {
         return error_body(400, "INVALID_REQUEST", "Requisição inválida.");
-    };
-    match up.api.collect(&id, revision, &pre(&headers)).await {
-        Ok(c) => command("order", c),
+    }
+    match up.api.collect(&id, &pre(&headers)).await {
+        Ok(c) => command("batch", c),
         Err(e) => api_error(e),
     }
 }
@@ -254,16 +249,11 @@ async fn printed(
     Json(body): Json<Value>,
 ) -> Response {
     guard!(up, headers);
-    let (Some(revision), Some(quote)) = (body["revision"].as_u64(), body["quoteId"].as_str())
-    else {
+    let Some(quote) = body["quoteId"].as_str() else {
         return error_body(400, "INVALID_REQUEST", "Requisição inválida.");
     };
-    match up
-        .api
-        .mark_printed(&id, revision, quote, &pre(&headers))
-        .await
-    {
-        Ok(c) => command("order", c),
+    match up.api.mark_printed(&id, quote, &pre(&headers)).await {
+        Ok(c) => command("batch", c),
         Err(e) => api_error(e),
     }
 }
@@ -296,17 +286,14 @@ async fn quotes(
     let Some((file, fields)) = form(m).await else {
         return error_body(400, "INVALID_REQUEST", "Requisição inválida.");
     };
-    let amount = fields.get("amountCents").and_then(|v| v.parse().ok());
-    let revision = fields.get("orderRevision").and_then(|v| v.parse().ok());
-    let (Some(amount), Some(revision)) = (amount, revision) else {
+    let Some(amount) = fields.get("amountCents").and_then(|v| v.parse().ok()) else {
         return error_body(400, "INVALID_REQUEST", "Requisição inválida.");
     };
-    match up
-        .api
-        .submit_quote(&id, amount, revision, file, &pre(&headers))
-        .await
-    {
-        Ok(c) => command("order", c),
+    if fields.len() != 1 {
+        return error_body(400, "INVALID_REQUEST", "Requisição inválida.");
+    }
+    match up.api.submit_quote(&id, amount, file, &pre(&headers)).await {
+        Ok(c) => command("batch", c),
         Err(e) => api_error(e),
     }
 }
@@ -390,13 +377,14 @@ impl FakeHono {
             faults: faults.clone(),
         });
         let routes = Router::new()
-            .route("/orders", get(list))
-            .route("/orders/{id}", get(order))
-            .route("/orders/{id}/files/{file}", get(order_file))
-            .route("/orders/{id}/collected", post(collected))
-            .route("/orders/{id}/quotes", post(quotes))
-            .route("/orders/{id}/quotes/{quote}/file", get(quote_file))
-            .route("/orders/{id}/printed", post(printed))
+            .route("/batches", get(list))
+            .route("/batches/open", get(open))
+            .route("/batches/{id}", get(batch))
+            .route("/batches/{id}/orders/{order}/files/{file}", get(batch_file))
+            .route("/batches/{id}/collected", post(collected))
+            .route("/batches/{id}/quotes", post(quotes))
+            .route("/batches/{id}/quotes/{quote}/file", get(quote_file))
+            .route("/batches/{id}/printed", post(printed))
             .route("/monthly-closes/{c}", get(close))
             .route(
                 "/monthly-closes/{c}/invoice",
@@ -404,7 +392,7 @@ impl FakeHono {
             )
             .layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024));
         let app = Router::new()
-            .nest("/api/print-portal/v1", routes)
+            .nest("/api/print-portal/v2", routes)
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());

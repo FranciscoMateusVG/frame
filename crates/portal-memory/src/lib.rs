@@ -1,16 +1,17 @@
 //! In-memory fake of the Incluir print-portal service API, for tests and
 //! local development. Same contract as the real adapter (checked by the
 //! shared conformance suite): ETag/If-Match CAS, Idempotency-Key replay and
-//! conflict, the order state machine, supplier scoping (another supplier's
-//! orders are 404) and the monthly close. Financeiro's human decisions are
-//! test hooks here; through the real API they need a human session.
+//! conflict, the batch state machine, supplier scoping (another supplier's
+//! batches are 404) and the monthly close. Financeiro's human decisions
+//! (quote decision, receipt, cancellation) are test hooks here; through the
+//! real API they need a human session.
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use frame_observability::in_span;
 use frame_portal_domain::{
-    Close, CloseItem, CloseState, Competence, Currency, FileRef, Instant, Order, OrderList,
-    OrderStatus, PrintJob, Quote, QuoteDecision, is_uuid, sanitize_download_name,
+    Batch, BatchList, BatchQuote, BatchStatus, Close, CloseItem, CloseState, Competence, Currency,
+    FileRef, Instant, QuoteDecision, is_uuid, sanitize_download_name,
 };
 use frame_portal_port::{
     ApiError, ApiResult, Command, DOCUMENT_MAX_BYTES, Download, ListQuery, Preconditions, PrintApi,
@@ -29,24 +30,15 @@ pub const SYSTEM: &str = "memory";
 
 pub type Clock = Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>;
 
-/// One file card of a seeded order.
-#[derive(Clone, Debug)]
-pub struct SeedJob {
-    pub title: String,
-    pub copies: u32,
-    pub instructions: String,
-    pub filename: String,
-    pub bytes: Vec<u8>,
-}
-
 struct Stored {
     meta: FileRef,
     bytes: Bytes,
 }
 
-struct OrderRecord {
-    order: Order,
+struct BatchRecord {
+    batch: Batch,
     mine: bool,
+    /// Member file bytes by `orderId/fileId`.
     files: HashMap<String, Stored>,
     quote_document: Option<Stored>,
     quote_count: u64,
@@ -58,16 +50,15 @@ struct CloseRecord {
 }
 
 enum Replay {
-    Order(Command<Order>),
+    Batch(Command<Batch>),
     Close(Command<Close>),
 }
 
 #[derive(Default)]
 struct State {
-    orders: Vec<OrderRecord>,
+    batches: Vec<BatchRecord>,
     closes: HashMap<Competence, CloseRecord>,
     idempotency: HashMap<String, (String, Replay)>,
-    references: u32,
     unavailable: bool,
 }
 
@@ -92,14 +83,14 @@ fn version_mismatch() -> ApiError {
     reject(
         412,
         codes::VERSION_MISMATCH,
-        "O pedido foi atualizado. Consulte novamente antes de repetir.",
+        "O lote foi atualizado. Consulte novamente antes de repetir.",
     )
 }
 fn invalid_state() -> ApiError {
     reject(
         409,
         codes::INVALID_STATE,
-        "O pedido não está em um estado que permita esta operação.",
+        "O lote não está em um estado que permita esta operação.",
     )
 }
 fn invalid_request(message: &str) -> ApiError {
@@ -244,126 +235,118 @@ impl PrintApiMemory {
             .unavailable = unavailable;
     }
 
-    fn seed(&self, title: &str, jobs: Vec<SeedJob>, mine: bool) -> String {
+    fn seed(&self, batch: Batch, files: &[(&str, &[u8])], mine: bool) -> String {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.references += 1;
-        let id = uuid::Uuid::new_v4().to_string();
-        let mut files = HashMap::new();
-        let jobs = jobs
-            .into_iter()
-            .map(|job| {
-                let meta = FileRef {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    name: sanitize_download_name(&job.filename),
-                    mime: detect_mime(&job.bytes)
-                        .unwrap_or("application/octet-stream")
-                        .into(),
-                    bytes: job.bytes.len() as u64,
-                    sha256: sha256_hex(&job.bytes),
-                };
-                files.insert(
-                    meta.id.clone(),
+        let mut stored = HashMap::new();
+        for item in &batch.items {
+            for meta in item.files() {
+                let bytes = files
+                    .iter()
+                    .find(|(id, _)| *id == meta.id)
+                    .map(|(_, b)| Bytes::copy_from_slice(b))
+                    .expect("seed bytes for every file");
+                stored.insert(
+                    format!("{}/{}", item.order_id, meta.id),
                     Stored {
                         meta: meta.clone(),
-                        bytes: job.bytes.into(),
+                        bytes,
                     },
                 );
-                PrintJob {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    title: job.title,
-                    copies: job.copies,
-                    instructions: job.instructions,
-                    file: meta,
-                }
+            }
+        }
+        let quote_count = batch.current_quote.as_ref().map_or(0, |q| q.revision);
+        let quote_document = batch.current_quote.as_ref().and_then(|q| {
+            let (_, bytes) = files.iter().find(|(id, _)| *id == q.document.id)?;
+            Some(Stored {
+                meta: q.document.clone(),
+                bytes: Bytes::copy_from_slice(bytes),
             })
-            .collect();
-        let order = Order {
-            id: id.clone(),
-            reference: format!("IMP-{:04}", state.references),
-            title: title.into(),
-            revision: 1,
-            version: 1,
-            status: OrderStatus::Ready,
-            created_at: self.now().into(),
-            collected_at: None,
-            printed_at: None,
-            approved_amount_cents: None,
-            jobs,
-            general_instructions: None,
-            current_quote: None,
-            cancellation_reason: None,
-        };
-        state.orders.push(OrderRecord {
-            order,
+        });
+        let id = batch.id.clone();
+        state.batches.push(BatchRecord {
+            batch,
             mine,
-            files,
-            quote_document: None,
-            quote_count: 0,
+            files: stored,
+            quote_document,
+            quote_count,
         });
         id
     }
 
-    /// A `ready` order of this supplier (approved request, all files linked).
-    pub fn seed_order(&self, title: &str, jobs: Vec<SeedJob>) -> String {
-        self.seed(title, jobs, true)
+    /// A batch of this supplier, verbatim (e.g. a frozen fixture snapshot),
+    /// with the bytes of every member file (and current quote) by file id.
+    pub fn seed_batch(&self, batch: Batch, files: &[(&str, &[u8])]) -> String {
+        self.seed(batch, files, true)
     }
-    /// An order of another supplier: must stay invisible (404).
-    pub fn seed_foreign_order(&self, title: &str, jobs: Vec<SeedJob>) -> String {
-        self.seed(title, jobs, false)
+    /// A batch of another supplier: must stay invisible (404).
+    pub fn seed_foreign_batch(&self, batch: Batch, files: &[(&str, &[u8])]) -> String {
+        self.seed(batch, files, false)
     }
 
     fn staff_update(
         &self,
-        order_id: &str,
-        apply: impl FnOnce(&mut Order, DateTime<Utc>) -> Result<(), &'static str>,
+        batch_id: &str,
+        apply: impl FnOnce(&mut Batch, DateTime<Utc>) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
         let now = self.now();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let record = state
-            .orders
+            .batches
             .iter_mut()
-            .find(|r| r.order.id == order_id)
-            .ok_or("unknown order")?;
-        apply(&mut record.order, now)?;
-        record.order.version += 1;
+            .find(|r| r.batch.id == batch_id)
+            .ok_or("unknown batch")?;
+        apply(&mut record.batch, now)?;
+        record.batch.version += 1;
         Ok(())
     }
 
     /// Financeiro decision on the current quote (human route upstream).
     pub fn decide_quote(
         &self,
-        order_id: &str,
+        batch_id: &str,
         approve: bool,
         reason: Option<&str>,
     ) -> Result<(), &'static str> {
-        self.staff_update(order_id, |order, now| {
-            let quote = order.current_quote.as_mut().ok_or("no quote")?;
-            if order.status != OrderStatus::QuotePending || quote.decision != QuoteDecision::Pending
+        self.staff_update(batch_id, |batch, now| {
+            let quote = batch.current_quote.as_mut().ok_or("no quote")?;
+            if batch.status != BatchStatus::QuotePending || quote.decision != QuoteDecision::Pending
             {
                 return Err("not pending");
             }
             quote.decided_at = Some(now.into());
             if approve {
                 quote.decision = QuoteDecision::Approved;
-                order.approved_amount_cents = Some(quote.amount_cents);
-                order.status = OrderStatus::QuoteApproved;
+                batch.approved_amount_cents = Some(quote.amount_cents);
+                batch.status = BatchStatus::QuoteApproved;
             } else {
                 quote.decision = QuoteDecision::Rejected;
                 quote.rejection_reason = Some(reason.ok_or("reason required")?.into());
-                order.status = OrderStatus::QuoteRejected;
+                batch.status = BatchStatus::QuoteRejected;
             }
             Ok(())
         })
     }
 
-    /// Financeiro cancellation (human route upstream).
-    pub fn cancel(&self, order_id: &str, reason: &str) -> Result<(), &'static str> {
-        self.staff_update(order_id, |order, _| {
-            if matches!(order.status, OrderStatus::Printed | OrderStatus::Cancelled) {
+    /// Financeiro confirms the whole receipt (human route upstream).
+    pub fn receive(&self, batch_id: &str) -> Result<(), &'static str> {
+        self.staff_update(batch_id, |batch, now| {
+            if batch.status != BatchStatus::Printed {
+                return Err("not printed");
+            }
+            batch.status = BatchStatus::Received;
+            batch.received_at = Some(now.into());
+            Ok(())
+        })
+    }
+
+    /// Whole-batch cancellation, only before printed (human route upstream).
+    pub fn cancel(&self, batch_id: &str, reason: &str) -> Result<(), &'static str> {
+        self.staff_update(batch_id, |batch, _| {
+            if !batch.status.is_current() || batch.status == BatchStatus::Printed {
                 return Err("not cancellable");
             }
-            order.status = OrderStatus::Cancelled;
-            order.cancellation_reason = Some(reason.into());
+            batch.status = BatchStatus::Cancelled;
+            batch.cancellation_reason = Some(reason.into());
             Ok(())
         })
     }
@@ -414,24 +397,24 @@ impl PrintApiMemory {
     }
 
     /// Supplier command pipeline: visibility (404) → headers (428/400) →
-    /// idempotency (replay/409) → If-Match (412) → state machine (409/412).
-    fn order_command(
+    /// idempotency (replay/409) → If-Match (412) → state machine (409).
+    fn batch_command(
         &self,
-        order_id: &str,
+        batch_id: &str,
         route: &str,
         intent_fields: String,
         pre: &Preconditions,
         status: u16,
-        apply: impl FnOnce(&mut OrderRecord, DateTime<Utc>) -> ApiResult<()>,
-    ) -> ApiResult<Command<Order>> {
+        apply: impl FnOnce(&mut BatchRecord, DateTime<Utc>) -> ApiResult<()>,
+    ) -> ApiResult<Command<Batch>> {
         let now = self.now();
         let mut state = self.lock()?;
         let state = &mut *state;
-        let index = visible_index(state, order_id)?;
+        let index = visible_index(state, batch_id)?;
         let (if_match, key) = required(pre)?;
-        let intent = format!("POST {route}/{order_id} {if_match} {intent_fields}");
+        let intent = format!("POST {route}/{batch_id} {if_match} {intent_fields}");
         match state.idempotency.get(&key) {
-            Some((stored, Replay::Order(command))) if *stored == intent => {
+            Some((stored, Replay::Batch(command))) if *stored == intent => {
                 return Ok(Command {
                     replayed: true,
                     ..command.clone()
@@ -446,57 +429,53 @@ impl PrintApiMemory {
             }
             None => {}
         }
-        let record = &mut state.orders[index];
-        if if_match != etag(order_id, record.order.version) {
+        let record = &mut state.batches[index];
+        if if_match != etag(batch_id, record.batch.version) {
             return Err(version_mismatch());
         }
         apply(record, now)?;
-        record.order.version += 1;
-        let command = Command {
-            status,
-            body: record.order.clone(),
-            etag: etag(order_id, record.order.version),
-            replayed: false,
-        };
-        if record.order.status == OrderStatus::Printed {
+        record.batch.version += 1;
+        if record.batch.status == BatchStatus::Printed {
             bill(state, index, now);
         }
-        let record = &state.orders[index];
+        let record = &state.batches[index];
         let command = Command {
-            body: record.order.clone(),
-            ..command
+            status,
+            body: record.batch.clone(),
+            etag: etag(batch_id, record.batch.version),
+            replayed: false,
         };
         state
             .idempotency
-            .insert(key, (intent, Replay::Order(command.clone())));
+            .insert(key, (intent, Replay::Batch(command.clone())));
         Ok(command)
     }
 }
 
-fn visible_index(state: &State, order_id: &str) -> ApiResult<usize> {
-    if !is_uuid(order_id) {
+fn visible_index(state: &State, batch_id: &str) -> ApiResult<usize> {
+    if !is_uuid(batch_id) {
         return Err(not_found());
     }
     state
-        .orders
+        .batches
         .iter()
-        .position(|r| r.mine && r.order.id == order_id)
+        .position(|r| r.mine && r.batch.id == batch_id)
         .ok_or_else(not_found)
 }
 
-/// `printed` bills the order into the São Paulo month of its print.
+/// `printed` bills the whole batch quote once into the São Paulo month.
 fn bill(state: &mut State, index: usize, now: DateTime<Utc>) {
-    let order = &state.orders[index].order;
+    let batch = &state.batches[index].batch;
     let competence = Competence::containing(now);
-    let item = CloseItem {
-        order_id: order.id.clone(),
-        reference: order.reference.clone(),
-        quote_id: order
+    let item = CloseItem::Batch {
+        batch_id: batch.id.clone(),
+        reference: batch.reference.clone(),
+        quote_id: batch
             .current_quote
             .as_ref()
             .map(|q| q.id.clone())
             .unwrap_or_default(),
-        amount_cents: order.approved_amount_cents.unwrap_or_default(),
+        amount_cents: batch.approved_amount_cents.unwrap_or_default(),
         printed_at: now.into(),
     };
     let record = state
@@ -509,7 +488,7 @@ fn bill(state: &mut State, index: usize, now: DateTime<Utc>) {
             },
             document: None,
         });
-    record.close.expected_total_cents += item.amount_cents;
+    record.close.expected_total_cents += item.amount_cents();
     record.close.items.push(item);
     record.close.version += 1;
 }
@@ -523,14 +502,14 @@ fn close_etag(competence: Competence, close: &Close) -> String {
 
 #[async_trait]
 impl PrintApi for PrintApiMemory {
-    async fn list_orders(&self, query: &ListQuery) -> ApiResult<OrderList> {
-        span("print_api.listOrders", "GET", async {
+    async fn list_batches(&self, query: &ListQuery) -> ApiResult<BatchList> {
+        span("print_api.listBatches", "GET", async {
             let state = self.lock()?;
             let limit = query.limit.unwrap_or(20);
             if !(1..=100).contains(&limit) {
                 return Err(invalid_request("Requisição inválida."));
             }
-            let status = query.status.map(OrderStatus::as_str).unwrap_or("");
+            let status = query.status.map(BatchStatus::as_str).unwrap_or("");
             let after = match &query.cursor {
                 None => None,
                 Some(cursor) => {
@@ -540,35 +519,34 @@ impl PrintApi for PrintApiMemory {
                     else {
                         return Err(invalid_cursor());
                     };
-                    if s != status || !is_uuid(id) || Instant::parse(at).is_none() {
+                    if s != status || !is_uuid(id) {
                         return Err(invalid_cursor());
                     }
-                    Some((at.to_owned(), id.to_owned()))
+                    let at = Instant::parse(at).ok_or_else(invalid_cursor)?.to_utc();
+                    Some((at, id.to_owned()))
                 }
             };
-            let mut rows: Vec<&Order> = state
-                .orders
+            let mut rows: Vec<&Batch> = state
+                .batches
                 .iter()
-                .filter(|r| r.mine && query.status.is_none_or(|s| r.order.status == s))
-                .map(|r| &r.order)
+                .filter(|r| r.mine && query.status.is_none_or(|s| r.batch.status == s))
+                .map(|r| &r.batch)
                 .collect();
             rows.sort_by(|a, b| {
                 (a.created_at.to_utc(), &a.id).cmp(&(b.created_at.to_utc(), &b.id))
             });
-            let rows: Vec<&Order> = rows
+            let rows: Vec<&Batch> = rows
                 .into_iter()
-                .filter(|o| match &after {
-                    None => true,
-                    Some((at, id)) => {
-                        let key = (Instant::parse(at).expect("checked").to_utc(), id);
-                        (o.created_at.to_utc(), &o.id) > (key.0, key.1)
-                    }
+                .filter(|b| {
+                    after
+                        .as_ref()
+                        .is_none_or(|(at, id)| (b.created_at.to_utc(), &b.id) > (*at, id))
                 })
                 .collect();
             let page: Vec<_> = rows
                 .iter()
                 .take(limit as usize)
-                .map(|o| o.summary())
+                .map(|b| b.summary())
                 .collect();
             let next_cursor = (rows.len() > limit as usize).then(|| {
                 let last = page.last().expect("non-empty page");
@@ -578,7 +556,7 @@ impl PrintApi for PrintApiMemory {
                     last.id
                 ))
             });
-            Ok(OrderList {
+            Ok(BatchList {
                 items: page,
                 next_cursor,
             })
@@ -586,57 +564,71 @@ impl PrintApi for PrintApiMemory {
         .await
     }
 
-    async fn get_order(&self, order_id: &str) -> ApiResult<Tagged<Order>> {
-        span("print_api.getOrder", "GET", async {
+    async fn open_batch(&self) -> ApiResult<Option<Tagged<Batch>>> {
+        span("print_api.openBatch", "GET", async {
             let state = self.lock()?;
-            let order = &state.orders[visible_index(&state, order_id)?].order;
+            let mine = || state.batches.iter().filter(|r| r.mine).map(|r| &r.batch);
+            if mine().any(|b| b.status.is_current() && b.status != BatchStatus::Open) {
+                return Ok(None);
+            }
+            Ok(mine()
+                .find(|b| b.status == BatchStatus::Open)
+                .map(|b| Tagged {
+                    body: b.clone(),
+                    etag: etag(&b.id, b.version),
+                }))
+        })
+        .await
+    }
+
+    async fn get_batch(&self, batch_id: &str) -> ApiResult<Tagged<Batch>> {
+        span("print_api.getBatch", "GET", async {
+            let state = self.lock()?;
+            let batch = &state.batches[visible_index(&state, batch_id)?].batch;
             Ok(Tagged {
-                body: order.clone(),
-                etag: etag(order_id, order.version),
+                body: batch.clone(),
+                etag: etag(batch_id, batch.version),
             })
         })
         .await
     }
 
-    async fn order_file(&self, order_id: &str, file_id: &str) -> ApiResult<Download> {
-        span("print_api.orderFile", "GET", async {
+    async fn batch_file(
+        &self,
+        batch_id: &str,
+        order_id: &str,
+        file_id: &str,
+    ) -> ApiResult<Download> {
+        span("print_api.batchFile", "GET", async {
             let state = self.lock()?;
-            let record = &state.orders[visible_index(&state, order_id)?];
-            if record.order.status == OrderStatus::Cancelled {
-                return Err(not_found());
-            }
+            let record = &state.batches[visible_index(&state, batch_id)?];
             record
                 .files
-                .get(file_id)
+                .get(&format!("{order_id}/{file_id}"))
                 .map(download)
                 .ok_or_else(not_found)
         })
         .await
     }
 
-    async fn collect(
-        &self,
-        order_id: &str,
-        revision: u64,
-        pre: &Preconditions,
-    ) -> ApiResult<Command<Order>> {
+    async fn collect(&self, batch_id: &str, pre: &Preconditions) -> ApiResult<Command<Batch>> {
         span("print_api.collect", "POST", async {
-            self.order_command(
-                order_id,
+            self.batch_command(
+                batch_id,
                 "collected",
-                format!("revision={revision}"),
+                String::new(),
                 pre,
                 200,
                 |record, now| {
-                    let order = &mut record.order;
-                    if order.status != OrderStatus::Ready {
+                    let batch = &mut record.batch;
+                    if batch.status != BatchStatus::Open {
                         return Err(invalid_state());
                     }
-                    if revision != order.revision {
-                        return Err(version_mismatch());
+                    if batch.items.is_empty() {
+                        return Err(reject(409, codes::EMPTY_BATCH, "O lote está vazio."));
                     }
-                    order.status = OrderStatus::FilesCollected;
-                    order.collected_at = Some(now.into());
+                    batch.status = BatchStatus::FilesCollected;
+                    batch.collected_at = Some(now.into());
                     Ok(())
                 },
             )
@@ -646,36 +638,29 @@ impl PrintApi for PrintApiMemory {
 
     async fn submit_quote(
         &self,
-        order_id: &str,
+        batch_id: &str,
         amount_cents: i64,
-        order_revision: u64,
         file: Upload,
         pre: &Preconditions,
-    ) -> ApiResult<Command<Order>> {
+    ) -> ApiResult<Command<Batch>> {
         span("print_api.submitQuote", "POST", async {
             let prepared = prepare_document(&file);
             let stored = match prepared {
                 Ok(stored) => stored,
                 Err(error) => {
                     // Authorization precedes validation: a foreign id is 404.
-                    visible_index(&*self.lock()?, order_id)?;
+                    visible_index(&*self.lock()?, batch_id)?;
                     return Err(error);
                 }
             };
-            let fields = format!(
-                "amountCents={amount_cents} orderRevision={order_revision} sha256={}",
-                stored.meta.sha256
-            );
-            self.order_command(order_id, "quotes", fields, pre, 201, |record, now| {
-                let order = &mut record.order;
+            let fields = format!("amountCents={amount_cents} sha256={}", stored.meta.sha256);
+            self.batch_command(batch_id, "quotes", fields, pre, 201, |record, now| {
+                let batch = &mut record.batch;
                 if !matches!(
-                    order.status,
-                    OrderStatus::FilesCollected | OrderStatus::QuoteRejected
+                    batch.status,
+                    BatchStatus::FilesCollected | BatchStatus::QuoteRejected
                 ) {
                     return Err(invalid_state());
-                }
-                if order_revision != order.revision {
-                    return Err(version_mismatch());
                 }
                 record.quote_count += 1;
                 let id = uuid::Uuid::new_v4().to_string();
@@ -683,10 +668,9 @@ impl PrintApi for PrintApiMemory {
                     id: id.clone(),
                     ..stored.meta.clone()
                 };
-                order.current_quote = Some(Quote {
+                batch.current_quote = Some(BatchQuote {
                     id,
                     revision: record.quote_count,
-                    order_revision,
                     amount_cents,
                     currency: Currency::Brl,
                     document: document.clone(),
@@ -695,7 +679,7 @@ impl PrintApi for PrintApiMemory {
                     submitted_at: now.into(),
                     decided_at: None,
                 });
-                order.status = OrderStatus::QuotePending;
+                batch.status = BatchStatus::QuotePending;
                 record.quote_document = Some(Stored {
                     meta: document,
                     bytes: stored.bytes,
@@ -706,11 +690,11 @@ impl PrintApi for PrintApiMemory {
         .await
     }
 
-    async fn quote_file(&self, order_id: &str, quote_id: &str) -> ApiResult<Download> {
+    async fn quote_file(&self, batch_id: &str, quote_id: &str) -> ApiResult<Download> {
         span("print_api.quoteFile", "GET", async {
             let state = self.lock()?;
-            let record = &state.orders[visible_index(&state, order_id)?];
-            match (&record.order.current_quote, &record.quote_document) {
+            let record = &state.batches[visible_index(&state, batch_id)?];
+            match (&record.batch.current_quote, &record.quote_document) {
                 (Some(quote), Some(stored)) if quote.id == quote_id => Ok(download(stored)),
                 _ => Err(not_found()),
             }
@@ -720,28 +704,27 @@ impl PrintApi for PrintApiMemory {
 
     async fn mark_printed(
         &self,
-        order_id: &str,
-        revision: u64,
+        batch_id: &str,
         quote_id: &str,
         pre: &Preconditions,
-    ) -> ApiResult<Command<Order>> {
+    ) -> ApiResult<Command<Batch>> {
         span("print_api.markPrinted", "POST", async {
-            let fields = format!("revision={revision} quoteId={quote_id}");
-            self.order_command(order_id, "printed", fields, pre, 200, |record, now| {
-                let order = &mut record.order;
-                let approved = order
+            let fields = format!("quoteId={quote_id}");
+            self.batch_command(batch_id, "printed", fields, pre, 200, |record, now| {
+                let batch = &mut record.batch;
+                let approved = batch
                     .current_quote
                     .as_ref()
                     .filter(|q| q.decision == QuoteDecision::Approved);
-                let Some(quote) = approved.filter(|_| order.status == OrderStatus::QuoteApproved)
+                let Some(quote) = approved.filter(|_| batch.status == BatchStatus::QuoteApproved)
                 else {
                     return Err(invalid_state());
                 };
-                if revision != order.revision || quote_id != quote.id {
+                if quote_id != quote.id {
                     return Err(version_mismatch());
                 }
-                order.status = OrderStatus::Printed;
-                order.printed_at = Some(now.into());
+                batch.status = BatchStatus::Printed;
+                batch.printed_at = Some(now.into());
                 Ok(())
             })
         })

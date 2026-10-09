@@ -3,11 +3,11 @@
 //! that live stack. Inputs (env, never printed):
 //!   PORTAL_BASE_URL         e.g. http://127.0.0.1:4000 (also the Origin)
 //!   PRINT_PORTAL_PASSWORD   the portal's shared password
-//!   E2E_ORDER_ID            a `ready` order of this supplier
-//!   E2E_FOREIGN_ORDER_ID    an order of another supplier (must be invisible)
-//!   APPROVE_QUOTE_CMD       command run with the order id as its argument;
+//!   E2E_BATCH_ID            the supplier's current `open` batch
+//!   E2E_FOREIGN_BATCH_ID    a batch of another supplier (must be invisible)
+//!   APPROVE_QUOTE_CMD       command run with the batch id as its argument;
 //!                           performs Financeiro's human approval upstream
-//!   E2E_CLOSED_COMPETENCE   an ended YYYY-MM with printed, unbilled orders
+//!   E2E_CLOSED_COMPETENCE   an ended YYYY-MM with printed, unbilled batches
 //!   DECIDE_INVOICE_CMD      command run as `<closeId> rejected <reason>` and
 //!                           `<closeId> accepted`: Financeiro's NF decision
 use frame_portal_domain::Competence;
@@ -88,8 +88,8 @@ fn key() -> String {
 async fn main() {
     let base = env("PORTAL_BASE_URL");
     let password = env("PRINT_PORTAL_PASSWORD");
-    let order_id = env("E2E_ORDER_ID");
-    let foreign = env("E2E_FOREIGN_ORDER_ID");
+    let batch_id = env("E2E_BATCH_ID");
+    let foreign = env("E2E_FOREIGN_BATCH_ID");
     let approve = env("APPROVE_QUOTE_CMD");
     let b = Browser {
         client: reqwest::Client::builder()
@@ -111,10 +111,12 @@ async fn main() {
     );
     ok("healthz/readyz 200 (service token accepted by the real Hono)");
 
-    let r = b.send(b.request(Method::GET, "/orders")).await;
+    let r = b.send(b.request(Method::GET, "/batches")).await;
     assert_eq!(r.status(), 303);
-    assert_eq!(r.headers()[header::LOCATION], "/login?next=%2Forders");
-    let (status, body, _) = b.json(b.request(Method::GET, "/api/print/v1/orders")).await;
+    assert_eq!(r.headers()[header::LOCATION], "/login?next=%2Fbatches");
+    let (status, body, _) = b
+        .json(b.request(Method::GET, "/api/print/v2/batches"))
+        .await;
     assert_eq!((status, code(&body)), (401, "UNAUTHENTICATED"));
     ok("no session: HTML 303 → /login, JSON 401 UNAUTHENTICATED");
 
@@ -138,7 +140,7 @@ async fn main() {
     ok("login: wrong password 401, right password 200 with rotated session");
 
     let (status, list, _) = b
-        .json(b.request(Method::GET, "/api/print/v1/orders?limit=100"))
+        .json(b.request(Method::GET, "/api/print/v2/batches?limit=100"))
         .await;
     assert_eq!(status, 200);
     let ids: Vec<&str> = list["items"]
@@ -147,28 +149,43 @@ async fn main() {
         .iter()
         .map(|o| o["id"].as_str().unwrap())
         .collect();
-    assert!(ids.contains(&order_id.as_str()), "ready order listed");
-    assert!(!ids.contains(&foreign.as_str()), "foreign order hidden");
+    assert!(ids.contains(&batch_id.as_str()), "open batch listed");
+    assert!(!ids.contains(&foreign.as_str()), "foreign batch hidden");
     let (status, body, _) = b
-        .json(b.request(Method::GET, &format!("/api/print/v1/orders/{foreign}")))
+        .json(b.request(Method::GET, &format!("/api/print/v2/batches/{foreign}")))
         .await;
     assert_eq!((status, code(&body)), (404, "NOT_FOUND"));
     ok(&format!(
-        "list: {} visible orders, foreign order 404",
+        "list: {} visible batches, foreign batch 404",
         ids.len()
     ));
 
-    let path = format!("/api/print/v1/orders/{order_id}");
-    let (status, order, headers) = b.json(b.request(Method::GET, &path)).await;
+    let path = format!("/api/print/v2/batches/{batch_id}");
+    let (status, batch, headers) = b.json(b.request(Method::GET, &path)).await;
     assert_eq!(status, 200);
-    assert_eq!(order["order"]["status"], "ready");
+    assert_eq!(batch["batch"]["status"], "open");
     let etag = headers[header::ETAG].to_str().unwrap().to_owned();
-    for job in order["order"]["jobs"].as_array().unwrap() {
-        let file = &job["file"];
+    let mut files = vec![];
+    for item in batch["batch"]["items"].as_array().unwrap() {
+        let residual = item["generalInstructions"]["files"].as_array().cloned();
+        for file in item["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|j| j["file"].clone())
+            .chain(residual.unwrap_or_default())
+        {
+            files.push((item["orderId"].as_str().unwrap().to_owned(), file));
+        }
+    }
+    for (order_id, file) in &files {
         let r = b
             .send(b.request(
                 Method::GET,
-                &format!("{path}/files/{}", file["id"].as_str().unwrap()),
+                &format!(
+                    "{path}/orders/{order_id}/files/{}",
+                    file["id"].as_str().unwrap()
+                ),
             ))
             .await;
         assert_eq!(r.status(), 200);
@@ -187,41 +204,41 @@ async fn main() {
         assert_eq!(digest, file["sha256"].as_str().unwrap());
     }
     let html = b
-        .send(b.request(Method::GET, &format!("/orders/{order_id}")))
+        .send(b.request(Method::GET, "/"))
         .await
         .text()
         .await
         .unwrap();
-    assert!(html.contains("Arquivos retirados") && html.contains("Baixar arquivo"));
+    assert!(html.contains("Retirei os arquivos") && html.contains("Baixar arquivo"));
     ok(&format!(
-        "order {}: {} files streamed, sha256 verified, page renders",
-        order["order"]["reference"].as_str().unwrap(),
-        order["order"]["jobs"].as_array().unwrap().len()
+        "batch {}: {} files streamed, sha256 verified, home renders",
+        batch["batch"]["reference"].as_str().unwrap(),
+        files.len()
     ));
 
     let collect = |etag: &str, key: &str| {
         b.command(Method::POST, &format!("{path}/collected"))
             .header(header::IF_MATCH, etag)
             .header("idempotency-key", key)
-            .json(&json!({"revision": order["order"]["revision"]}))
+            .json(&json!({}))
     };
     let (status, body, _) = b
         .json(
             b.command(Method::POST, &format!("{path}/collected"))
-                .json(&json!({"revision": 1})),
+                .json(&json!({})),
         )
         .await;
     assert_eq!((status, code(&body)), (428, "PRECONDITION_REQUIRED"));
     let k = key();
     let (status, first, headers) = b.json(collect(&etag, &k)).await;
     assert_eq!(
-        (status, first["order"]["status"].as_str()),
+        (status, first["batch"]["status"].as_str()),
         (200, Some("files_collected"))
     );
     let etag = headers[header::ETAG].to_str().unwrap().to_owned();
     let (status, replay, headers) = b
         .json(collect(
-            &format!("\"{order_id}:{}\"", order["order"]["version"]),
+            &format!("\"{batch_id}:{}\"", batch["batch"]["version"]),
             &k,
         ))
         .await;
@@ -230,7 +247,7 @@ async fn main() {
     assert_eq!(replay, first);
     let (status, body, _) = b
         .json(collect(
-            &format!("\"{order_id}:{}\"", order["order"]["version"]),
+            &format!("\"{batch_id}:{}\"", batch["batch"]["version"]),
             &key(),
         ))
         .await;
@@ -248,17 +265,16 @@ async fn main() {
                     multipart::Part::bytes(b"%PDF-1.4\n% orcamento e2e rust\n%%EOF\n".to_vec())
                         .file_name("orçamento.pdf"),
                 )
-                .text("amountCents", "45900")
-                .text("orderRevision", order["order"]["revision"].to_string()),
+                .text("amountCents", "45900"),
         );
     let (status, quoted, headers) = b.json(quote).await;
     assert_eq!(
-        (status, quoted["order"]["status"].as_str()),
+        (status, quoted["batch"]["status"].as_str()),
         (201, Some("quote_pending")),
         "{quoted}"
     );
     let etag = headers[header::ETAG].to_str().unwrap().to_owned();
-    let quote_id = quoted["order"]["currentQuote"]["id"]
+    let quote_id = quoted["batch"]["currentQuote"]["id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -266,34 +282,34 @@ async fn main() {
         b.command(Method::POST, &format!("{path}/printed"))
             .header(header::IF_MATCH, etag)
             .header("idempotency-key", key())
-            .json(&json!({"revision": order["order"]["revision"], "quoteId": quote_id}))
+            .json(&json!({ "quoteId": quote_id }))
     };
     let (status, body, _) = b.json(printed(&etag)).await;
     assert_eq!((status, code(&body)), (409, "INVALID_STATE"));
     ok("quote: 201 quote_pending; printing before approval 409 INVALID_STATE");
 
     let out = Command::new(&approve)
-        .arg(&order_id)
+        .arg(&batch_id)
         .output()
         .expect("approval command runs");
     assert!(out.status.success(), "approval command failed");
-    let (_, order_now, headers) = b.json(b.request(Method::GET, &path)).await;
-    assert_eq!(order_now["order"]["status"], "quote_approved");
+    let (_, batch_now, headers) = b.json(b.request(Method::GET, &path)).await;
+    assert_eq!(batch_now["batch"]["status"], "quote_approved");
     let etag = headers[header::ETAG].to_str().unwrap().to_owned();
     let (status, body, _) = b.json(printed(&etag)).await;
     assert_eq!(
-        (status, body["order"]["status"].as_str()),
+        (status, body["batch"]["status"].as_str()),
         (200, Some("printed"))
     );
-    assert_eq!(body["order"]["approvedAmountCents"], 45_900);
+    assert_eq!(body["batch"]["approvedAmountCents"], 45_900);
     ok("Financeiro approval (real staff route) → printed 200, approvedAmountCents 45900");
 
     // ── Monthly NF: a closed competence with printed items (seeded) and the
-    // current one, which now holds the order printed above. ──────────────
+    // current one, which now holds the batch printed above. ──────────────
     let closed = env("E2E_CLOSED_COMPETENCE");
     let decide = env("DECIDE_INVOICE_CMD");
     let current = Competence::containing(std::time::SystemTime::now().into()).to_string();
-    let close_path = |c: &str| format!("/api/print/v1/monthly-closes/{c}");
+    let close_path = |c: &str| format!("/api/print/v2/monthly-closes/{c}");
     let (status, now_close, headers) = b.json(b.request(Method::GET, &close_path(&current))).await;
     assert_eq!(status, 200, "{now_close}");
     assert_eq!(now_close["close"]["periodClosed"], false);
@@ -302,8 +318,8 @@ async fn main() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|i| i["orderId"] == order_id.as_str()),
-        "printed order billed into the current São Paulo month"
+            .any(|i| i["kind"] == "batch" && i["batchId"] == batch_id.as_str()),
+        "printed batch billed once into the current São Paulo month"
     );
     let now_etag = headers[header::ETAG].to_str().unwrap().to_owned();
     let nf = |bytes: &'static [u8], name: &str| {
@@ -341,7 +357,7 @@ async fn main() {
     let (status, body, _) = b.json(b.request(Method::GET, &close_path("2026-13"))).await;
     assert_eq!((status, code(&body)), (400, "INVALID_COMPETENCE"));
     ok(&format!(
-        "NF {current}: open period lists the printed order, upload 409 PERIOD_OPEN; bad competence 400"
+        "NF {current}: open period lists the printed batch, upload 409 PERIOD_OPEN; bad competence 400"
     ));
 
     let (status, close, headers) = b.json(b.request(Method::GET, &close_path(&closed))).await;
@@ -502,7 +518,9 @@ async fn main() {
             .status(),
         204
     );
-    let (status, _, _) = b.json(b.request(Method::GET, "/api/print/v1/orders")).await;
+    let (status, _, _) = b
+        .json(b.request(Method::GET, "/api/print/v2/batches"))
+        .await;
     assert_eq!(status, 401);
     ok("logout 204; session revoked (401)");
     println!("E2E PASSED");
