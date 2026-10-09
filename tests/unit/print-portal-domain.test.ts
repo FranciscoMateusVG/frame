@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { sniffDocumentMime } from '../../src/domain/document-type.js';
 import {
   formatCents,
   MAX_CENTS,
@@ -30,6 +31,7 @@ import {
   totalCopies,
   waitingMessage,
 } from '../../src/domain/print-batch.js';
+import { PDF_BYTES, PNG_BYTES } from '../helpers/print-fixtures.js';
 import { fixtureBatch } from '../helpers/print-v2-fixture.js';
 
 describe('money', () => {
@@ -198,5 +200,17 @@ describe('session expiry', () => {
     expect(isSessionExpired(busy, DEFAULT_SESSION_POLICY, new Date('2026-10-08T07:59:59Z'))).toBe(
       false,
     );
+  });
+});
+
+describe('document type', () => {
+  it('sniffs the accepted document types from their magic bytes only', () => {
+    expect(sniffDocumentMime(PDF_BYTES)).toBe('application/pdf');
+    expect(sniffDocumentMime(PNG_BYTES)).toBe('image/png');
+    expect(sniffDocumentMime(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe('image/jpeg');
+    expect(sniffDocumentMime(new TextEncoder().encode('RIFF\0\0\0\0WEBPVP8 '))).toBe('image/webp');
+    for (const other of ['', '<html>', '%PD', 'RIFF\0\0\0\0WAVE']) {
+      expect(sniffDocumentMime(new TextEncoder().encode(other)), other).toBeNull();
+    }
   });
 });

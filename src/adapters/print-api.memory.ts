@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { type Span, SpanStatusCode, trace } from '@opentelemetry/api';
+import { sniffDocumentMime } from '../domain/document-type.js';
 import {
   type CloseItem,
   competenceOf,
@@ -773,17 +774,7 @@ function sha256(bytes: Uint8Array): string {
 /** Magic-byte detection, as upstream: PDF/JPEG/PNG/WebP only, ≤ 5 MiB. */
 function documentMime(bytes: Uint8Array): string {
   if (bytes.byteLength > DOCUMENT_MAX_BYTES) throw reject('FILE_TOO_LARGE');
-  const head = Buffer.from(bytes.subarray(0, 12));
-  if (head.subarray(0, 5).toString('latin1') === '%PDF-') return 'application/pdf';
-  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg';
-  if (head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
-    return 'image/png';
-  }
-  if (
-    head.subarray(0, 4).toString('latin1') === 'RIFF' &&
-    head.subarray(8, 12).toString('latin1') === 'WEBP'
-  ) {
-    return 'image/webp';
-  }
-  throw reject('UNSUPPORTED_MEDIA_TYPE');
+  const mime = sniffDocumentMime(bytes);
+  if (!mime) throw reject('UNSUPPORTED_MEDIA_TYPE');
+  return mime;
 }

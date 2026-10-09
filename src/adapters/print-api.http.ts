@@ -1,5 +1,6 @@
 import { type Span, SpanStatusCode, trace } from '@opentelemetry/api';
 import type { z } from 'zod';
+import { sniffDocumentMime } from '../domain/document-type.js';
 import type { MonthlyClose } from '../domain/monthly-close.js';
 import type { Batch, BatchPage } from '../domain/print-batch.js';
 import { UpstreamRejectedError } from '../errors/upstream-rejected.error.js';
@@ -131,7 +132,7 @@ export class PrintApiHttp implements PrintApi {
   ): Promise<CommandResult<Batch>> {
     return this.span('submitQuote', 'POST', '/batches/:id/quotes', async (span) => {
       const form = new FormData();
-      form.set('file', new Blob([toArrayBuffer(input.file.bytes)]), input.file.filename);
+      form.set('file', documentPart(input.file), input.file.filename);
       form.set('amountCents', String(input.amountCents));
       const res = await this.send('POST', `/batches/${seg(batchId)}/quotes`, span, {
         pre,
@@ -174,7 +175,7 @@ export class PrintApiHttp implements PrintApi {
       '/monthly-closes/:competence/invoice',
       async (span) => {
         const form = new FormData();
-        form.set('file', new Blob([toArrayBuffer(input.file.bytes)]), input.file.filename);
+        form.set('file', documentPart(input.file), input.file.filename);
         form.set('declaredTotalCents', String(input.declaredTotalCents));
         const res = await this.send('POST', `/monthly-closes/${seg(competence)}/invoice`, span, {
           pre,
@@ -333,6 +334,17 @@ export class PrintApiHttp implements PrintApi {
 /** Encode one path segment; ids never introduce `/`, `..` or a query. */
 function seg(value: string): string {
   return encodeURIComponent(value);
+}
+
+/**
+ * The upload as a multipart part declaring what its bytes are: upstream
+ * refuses a declared type that differs from the sniffed one, and anything
+ * that is not an accepted document stays octet-stream (upstream answers 415).
+ */
+function documentPart(file: Upload): Blob {
+  return new Blob([toArrayBuffer(file.bytes)], {
+    type: sniffDocumentMime(file.bytes) ?? 'application/octet-stream',
+  });
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {

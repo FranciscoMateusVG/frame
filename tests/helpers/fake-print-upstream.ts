@@ -16,6 +16,7 @@ import type { AddressInfo } from 'node:net';
 import { serve } from '@hono/node-server';
 import { type Context, Hono } from 'hono';
 import { PrintApiMemory } from '../../src/adapters/print-api.memory.js';
+import { sniffDocumentMime } from '../../src/domain/document-type.js';
 import { UpstreamRejectedError } from '../../src/errors/upstream-rejected.error.js';
 
 export interface FakeUpstreamBehaviour {
@@ -200,6 +201,17 @@ export async function startFakeUpstream(
       ETag: r.etag,
       ...(r.replayed ? { 'Idempotency-Replayed': 'true' } : {}),
     });
+  // As upstream: the part's declared type must be what its bytes are.
+  const declaredMatches = (file: File, bytes: Uint8Array) => {
+    if (sniffDocumentMime(bytes) !== file.type.toLowerCase()) {
+      throw new UpstreamRejectedError(
+        415,
+        'UNSUPPORTED_MEDIA_TYPE',
+        'Formato de arquivo não aceito.',
+        randomUUID(),
+      );
+    }
+  };
   const invalid = () =>
     new UpstreamRejectedError(400, 'INVALID_REQUEST', 'Requisição inválida.', randomUUID());
   v2.post('/batches/:id/collected', async (c) => {
@@ -226,12 +238,14 @@ export async function startFakeUpstream(
       const keys = Object.keys(form).sort().join(',');
       const file = form.file;
       if (keys !== 'amountCents,file' || !(file instanceof File)) throw invalid();
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      declaredMatches(file, bytes);
       return command(
         await api.submitQuote(
           c.req.param('id'),
           {
             amountCents: Number(form.amountCents),
-            file: { filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) },
+            file: { filename: file.name, bytes },
           },
           pre(c),
         ),
@@ -260,12 +274,14 @@ export async function startFakeUpstream(
       ) {
         throw invalid();
       }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      declaredMatches(file, bytes);
       return command(
         await api.submitInvoice(
           c.req.param('competence'),
           {
             declaredTotalCents: Number(form.declaredTotalCents),
-            file: { filename: file.name, bytes: new Uint8Array(await file.arrayBuffer()) },
+            file: { filename: file.name, bytes },
           },
           pre(c),
         ),
