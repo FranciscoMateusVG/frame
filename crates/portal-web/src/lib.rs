@@ -108,7 +108,7 @@ async fn catch_panic(State(state): State<Arc<AppState>>, request: Request, next:
                     StatusCode::INTERNAL_SERVER_ERROR,
                     maud::html! {
                         (maud::DOCTYPE)
-                        html lang="pt-BR" { body { h1 { "Erro interno" } p { "Tente novamente em instantes." } a href="/orders" { "Ir para Pedidos" } } }
+                        html lang="pt-BR" { body { h1 { "Erro interno" } p { "Tente novamente em instantes." } a href="/" { "Ir para o lote atual" } } }
                     },
                 )
                     .into_response()
@@ -138,7 +138,7 @@ async fn readyz(State(state): State<Arc<AppState>>) -> Response {
         limit: Some(1),
         ..ListQuery::default()
     };
-    match state.api.list_orders(&probe).await {
+    match state.api.list_batches(&probe).await {
         Ok(_) => axum::Json(json!({"status": "ready"})).into_response(),
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -166,10 +166,10 @@ pub fn app(
         ids: Arc::new(random_id),
     });
     Router::new()
-        .route("/", get(pages::root))
+        .route("/", get(pages::home))
         .route("/login", get(pages::login_page))
-        .route("/orders", get(pages::orders_page))
-        .route("/orders/{id}", get(pages::order_page))
+        .route("/batches", get(pages::batches_page))
+        .route("/batches/{id}", get(pages::batch_page))
         .route("/invoices", get(pages::invoices_page))
         .route("/assets/portal.js", get(assets::script))
         .route("/assets/portal.css", get(assets::style))

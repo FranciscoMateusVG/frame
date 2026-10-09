@@ -1,4 +1,4 @@
-//! Real adapter: Incluir Hono `/api/print-portal/v1` over HTTP(S).
+//! Real adapter: Incluir Hono `/api/print-portal/v2` over HTTP(S).
 //!
 //! - Fixed origin from configuration; ids/competences are validated before
 //!   they become path segments, so no request can choose host or path.
@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use frame_observability::in_span;
 use frame_portal_domain::{
-    Close, CloseResponse, Competence, Order, OrderList, OrderResponse, Validate,
+    Batch, BatchList, BatchResponse, Close, CloseResponse, Competence, OpenBatchResponse, Validate,
     disposition_filename, is_uuid, sanitize_download_name,
 };
 use frame_portal_port::{
@@ -29,7 +29,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 use std::{future::Future, time::Duration};
 
 pub const SYSTEM: &str = "incluir-hono";
-const PREFIX: &str = "/api/print-portal/v1";
+const PREFIX: &str = "/api/print-portal/v2";
 /// JSON bodies larger than this are not a contract response.
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 /// Largest file the portal relays (print files are ≤ 20 MiB upstream;
@@ -348,8 +348,8 @@ fn document(file: Upload) -> Part {
 
 #[async_trait]
 impl PrintApi for PrintApiHono {
-    async fn list_orders(&self, query: &ListQuery) -> ApiResult<OrderList> {
-        span("print_api.listOrders", "GET", async {
+    async fn list_batches(&self, query: &ListQuery) -> ApiResult<BatchList> {
+        span("print_api.listBatches", "GET", async {
             let mut params: Vec<(&str, String)> = vec![];
             if let Some(status) = query.status {
                 params.push(("status", status.as_str().into()));
@@ -361,59 +361,74 @@ impl PrintApi for PrintApiHono {
                 params.push(("cursor", cursor.clone()));
             }
             let req = self
-                .request(Method::GET, "/orders", self.timeouts.json)
+                .request(Method::GET, "/batches", self.timeouts.json)
                 .query(&params);
-            Ok(json::<OrderList>(send(req).await?).await?.0)
+            Ok(json::<BatchList>(send(req).await?).await?.0)
         })
         .await
     }
 
-    async fn get_order(&self, order_id: &str) -> ApiResult<Tagged<Order>> {
-        span("print_api.getOrder", "GET", async {
-            if !is_uuid(order_id) {
+    async fn open_batch(&self) -> ApiResult<Option<Tagged<Batch>>> {
+        span("print_api.openBatch", "GET", async {
+            let req = self.request(Method::GET, "/batches/open", self.timeouts.json);
+            let (body, etag) = json::<OpenBatchResponse>(send(req).await?).await?;
+            match body.batch {
+                Some(batch) => Ok(Some(Tagged {
+                    body: batch,
+                    etag: require_etag(etag)?,
+                })),
+                None => Ok(None),
+            }
+        })
+        .await
+    }
+
+    async fn get_batch(&self, batch_id: &str) -> ApiResult<Tagged<Batch>> {
+        span("print_api.getBatch", "GET", async {
+            if !is_uuid(batch_id) {
                 return Err(not_found());
             }
             let req = self.request(
                 Method::GET,
-                &format!("/orders/{order_id}"),
+                &format!("/batches/{batch_id}"),
                 self.timeouts.json,
             );
-            let (body, etag) = json::<OrderResponse>(send(req).await?).await?;
+            let (body, etag) = json::<BatchResponse>(send(req).await?).await?;
             Ok(Tagged {
-                body: body.order,
+                body: body.batch,
                 etag: require_etag(etag)?,
             })
         })
         .await
     }
 
-    async fn order_file(&self, order_id: &str, file_id: &str) -> ApiResult<Download> {
-        span("print_api.orderFile", "GET", async {
-            if !is_uuid(order_id) || !is_uuid(file_id) {
+    async fn batch_file(
+        &self,
+        batch_id: &str,
+        order_id: &str,
+        file_id: &str,
+    ) -> ApiResult<Download> {
+        span("print_api.batchFile", "GET", async {
+            if !is_uuid(batch_id) || !is_uuid(order_id) || !is_uuid(file_id) {
                 return Err(not_found());
             }
-            let path = format!("/orders/{order_id}/files/{file_id}");
+            let path = format!("/batches/{batch_id}/orders/{order_id}/files/{file_id}");
             download(send(self.request(Method::GET, &path, self.timeouts.download)).await?)
         })
         .await
     }
 
-    async fn collect(
-        &self,
-        order_id: &str,
-        revision: u64,
-        pre: &Preconditions,
-    ) -> ApiResult<Command<Order>> {
+    async fn collect(&self, batch_id: &str, pre: &Preconditions) -> ApiResult<Command<Batch>> {
         span("print_api.collect", "POST", async {
-            if !is_uuid(order_id) {
+            if !is_uuid(batch_id) {
                 return Err(not_found());
             }
-            let path = format!("/orders/{order_id}/collected");
+            let path = format!("/batches/{batch_id}/collected");
             let req = self
                 .request(Method::POST, &path, self.timeouts.json)
-                .json(&serde_json::json!({ "revision": revision }));
-            command(send(preconditions(req, pre)).await?, |r: OrderResponse| {
-                r.order
+                .json(&serde_json::json!({}));
+            command(send(preconditions(req, pre)).await?, |r: BatchResponse| {
+                r.batch
             })
             .await
         })
@@ -422,38 +437,36 @@ impl PrintApi for PrintApiHono {
 
     async fn submit_quote(
         &self,
-        order_id: &str,
+        batch_id: &str,
         amount_cents: i64,
-        order_revision: u64,
         file: Upload,
         pre: &Preconditions,
-    ) -> ApiResult<Command<Order>> {
+    ) -> ApiResult<Command<Batch>> {
         span("print_api.submitQuote", "POST", async {
-            if !is_uuid(order_id) {
+            if !is_uuid(batch_id) {
                 return Err(not_found());
             }
             let form = Form::new()
                 .part("file", document(file))
-                .text("amountCents", amount_cents.to_string())
-                .text("orderRevision", order_revision.to_string());
-            let path = format!("/orders/{order_id}/quotes");
+                .text("amountCents", amount_cents.to_string());
+            let path = format!("/batches/{batch_id}/quotes");
             let req = self
                 .request(Method::POST, &path, self.timeouts.upload)
                 .multipart(form);
-            command(send(preconditions(req, pre)).await?, |r: OrderResponse| {
-                r.order
+            command(send(preconditions(req, pre)).await?, |r: BatchResponse| {
+                r.batch
             })
             .await
         })
         .await
     }
 
-    async fn quote_file(&self, order_id: &str, quote_id: &str) -> ApiResult<Download> {
+    async fn quote_file(&self, batch_id: &str, quote_id: &str) -> ApiResult<Download> {
         span("print_api.quoteFile", "GET", async {
-            if !is_uuid(order_id) || !is_uuid(quote_id) {
+            if !is_uuid(batch_id) || !is_uuid(quote_id) {
                 return Err(not_found());
             }
-            let path = format!("/orders/{order_id}/quotes/{quote_id}/file");
+            let path = format!("/batches/{batch_id}/quotes/{quote_id}/file");
             download(send(self.request(Method::GET, &path, self.timeouts.download)).await?)
         })
         .await
@@ -461,21 +474,20 @@ impl PrintApi for PrintApiHono {
 
     async fn mark_printed(
         &self,
-        order_id: &str,
-        revision: u64,
+        batch_id: &str,
         quote_id: &str,
         pre: &Preconditions,
-    ) -> ApiResult<Command<Order>> {
+    ) -> ApiResult<Command<Batch>> {
         span("print_api.markPrinted", "POST", async {
-            if !is_uuid(order_id) {
+            if !is_uuid(batch_id) {
                 return Err(not_found());
             }
-            let path = format!("/orders/{order_id}/printed");
+            let path = format!("/batches/{batch_id}/printed");
             let req = self
                 .request(Method::POST, &path, self.timeouts.json)
-                .json(&serde_json::json!({ "revision": revision, "quoteId": quote_id }));
-            command(send(preconditions(req, pre)).await?, |r: OrderResponse| {
-                r.order
+                .json(&serde_json::json!({ "quoteId": quote_id }));
+            command(send(preconditions(req, pre)).await?, |r: BatchResponse| {
+                r.batch
             })
             .await
         })

@@ -4,7 +4,7 @@
 //! when the upstream is unavailable. Attributes carry ids and shapes only:
 //! never instructions, file names, amounts, tokens or documents.
 use frame_observability::{LogAttributes, Observability, in_span};
-use frame_portal_domain::{Close, Competence, Order, OrderList};
+use frame_portal_domain::{Batch, BatchList, Close, Competence};
 use frame_portal_port::{
     ApiError, ApiResult, Command, Download, ListQuery, Preconditions, PrintApi, Tagged, Upload,
 };
@@ -58,7 +58,7 @@ fn command_log<T>(
     }
 }
 
-pub async fn list_orders(deps: PrintDeps<'_>, query: ListQuery) -> ApiResult<OrderList> {
+pub async fn list_batches(deps: PrintDeps<'_>, query: ListQuery) -> ApiResult<BatchList> {
     let mut attributes = vec![KeyValue::new(
         "print.list.limit",
         i64::from(query.limit.unwrap_or(20)),
@@ -69,96 +69,121 @@ pub async fn list_orders(deps: PrintDeps<'_>, query: ListQuery) -> ApiResult<Ord
     attributes.push(KeyValue::new("print.list.paged", query.cursor.is_some()));
     run(
         &deps,
-        "listOrders",
+        "listBatches",
         attributes,
-        deps.api.list_orders(&query),
+        deps.api.list_batches(&query),
     )
     .await
 }
 
-pub async fn get_order(deps: PrintDeps<'_>, order_id: &str) -> ApiResult<Tagged<Order>> {
-    let attributes = vec![KeyValue::new("print.order.id", order_id.to_owned())];
-    run(&deps, "getOrder", attributes, deps.api.get_order(order_id)).await
+/// Upper bound of history pages scanned for the active batch.
+const CURRENT_SCAN_PAGES: usize = 20;
+
+/// The supplier's single current batch: the open one, else the active
+/// collected…printed one (the upstream hides the open batch meanwhile).
+/// `None` = nothing waiting for the print shop.
+pub async fn get_current_batch(deps: PrintDeps<'_>) -> ApiResult<Option<Tagged<Batch>>> {
+    let api = deps.api;
+    let future = async move {
+        if let Some(open) = api.open_batch().await? {
+            return Ok(Some(open));
+        }
+        let mut cursor = None;
+        for _ in 0..CURRENT_SCAN_PAGES {
+            let query = ListQuery {
+                status: None,
+                limit: Some(100),
+                cursor,
+            };
+            let page = api.list_batches(&query).await?;
+            if let Some(active) = page.items.iter().find(|b| b.status.is_current()) {
+                return api.get_batch(&active.id).await.map(Some);
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return Ok(None),
+            }
+        }
+        Err(ApiError::Unavailable { reason: "contract" })
+    };
+    run(&deps, "getCurrentBatch", vec![], future).await
 }
 
-pub async fn download_order_file(
+pub async fn get_batch(deps: PrintDeps<'_>, batch_id: &str) -> ApiResult<Tagged<Batch>> {
+    let attributes = vec![KeyValue::new("print.batch.id", batch_id.to_owned())];
+    run(&deps, "getBatch", attributes, deps.api.get_batch(batch_id)).await
+}
+
+pub async fn download_batch_file(
     deps: PrintDeps<'_>,
+    batch_id: &str,
     order_id: &str,
     file_id: &str,
 ) -> ApiResult<Download> {
     let attributes = vec![
+        KeyValue::new("print.batch.id", batch_id.to_owned()),
         KeyValue::new("print.order.id", order_id.to_owned()),
         KeyValue::new("print.file.id", file_id.to_owned()),
     ];
-    let future = deps.api.order_file(order_id, file_id);
-    run(&deps, "downloadOrderFile", attributes, future).await
+    let future = deps.api.batch_file(batch_id, order_id, file_id);
+    run(&deps, "downloadBatchFile", attributes, future).await
 }
 
 pub async fn collect_files(
     deps: PrintDeps<'_>,
-    order_id: &str,
-    revision: u64,
+    batch_id: &str,
     pre: &Preconditions,
-) -> ApiResult<Command<Order>> {
-    let attributes = vec![
-        KeyValue::new("print.order.id", order_id.to_owned()),
-        KeyValue::new("print.order.revision", revision as i64),
-    ];
-    let future = deps.api.collect(order_id, revision, pre);
+) -> ApiResult<Command<Batch>> {
+    let attributes = vec![KeyValue::new("print.batch.id", batch_id.to_owned())];
+    let future = deps.api.collect(batch_id, pre);
     let result = run(&deps, "collectFiles", attributes, future).await;
-    command_log(&deps, "print.order.collected", "orderId", order_id, &result);
+    command_log(&deps, "print.batch.collected", "batchId", batch_id, &result);
     result
 }
 
 pub async fn submit_quote(
     deps: PrintDeps<'_>,
-    order_id: &str,
+    batch_id: &str,
     amount_cents: i64,
-    order_revision: u64,
     file: Upload,
     pre: &Preconditions,
-) -> ApiResult<Command<Order>> {
+) -> ApiResult<Command<Batch>> {
     let attributes = vec![
-        KeyValue::new("print.order.id", order_id.to_owned()),
-        KeyValue::new("print.order.revision", order_revision as i64),
+        KeyValue::new("print.batch.id", batch_id.to_owned()),
         KeyValue::new("print.document.bytes", file.bytes.len() as i64),
     ];
-    let future = deps
-        .api
-        .submit_quote(order_id, amount_cents, order_revision, file, pre);
+    let future = deps.api.submit_quote(batch_id, amount_cents, file, pre);
     let result = run(&deps, "submitQuote", attributes, future).await;
-    command_log(&deps, "print.quote.submitted", "orderId", order_id, &result);
+    command_log(&deps, "print.quote.submitted", "batchId", batch_id, &result);
     result
 }
 
 pub async fn download_quote_file(
     deps: PrintDeps<'_>,
-    order_id: &str,
+    batch_id: &str,
     quote_id: &str,
 ) -> ApiResult<Download> {
     let attributes = vec![
-        KeyValue::new("print.order.id", order_id.to_owned()),
+        KeyValue::new("print.batch.id", batch_id.to_owned()),
         KeyValue::new("print.quote.id", quote_id.to_owned()),
     ];
-    let future = deps.api.quote_file(order_id, quote_id);
+    let future = deps.api.quote_file(batch_id, quote_id);
     run(&deps, "downloadQuoteFile", attributes, future).await
 }
 
 pub async fn mark_printed(
     deps: PrintDeps<'_>,
-    order_id: &str,
-    revision: u64,
+    batch_id: &str,
     quote_id: &str,
     pre: &Preconditions,
-) -> ApiResult<Command<Order>> {
+) -> ApiResult<Command<Batch>> {
     let attributes = vec![
-        KeyValue::new("print.order.id", order_id.to_owned()),
-        KeyValue::new("print.order.revision", revision as i64),
+        KeyValue::new("print.batch.id", batch_id.to_owned()),
         KeyValue::new("print.quote.id", quote_id.to_owned()),
     ];
-    let future = deps.api.mark_printed(order_id, revision, quote_id, pre);
+    let future = deps.api.mark_printed(batch_id, quote_id, pre);
     let result = run(&deps, "markPrinted", attributes, future).await;
-    command_log(&deps, "print.order.printed", "orderId", order_id, &result);
+    command_log(&deps, "print.batch.printed", "batchId", batch_id, &result);
     result
 }
 

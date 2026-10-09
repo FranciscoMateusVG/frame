@@ -1,5 +1,5 @@
-//! JSON surface of the BFF (spec §4.5): `/api/session` and the ten
-//! `/api/print/v1` routes. Session cookie instead of bearer; every POST
+//! JSON surface of the BFF (spec §4.5): `/api/session` and the
+//! `/api/print/v2` batch routes. Session cookie instead of bearer; every POST
 //! needs exact Origin + `X-CSRF-Token`. Bodies are validated here, then the
 //! upstream decides (If-Match, Idempotency-Key, state). Upstream contract
 //! errors are relayed with their status/code; anything else is 503
@@ -19,16 +19,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use frame_portal_domain::{
-    Competence, OrderStatus, content_disposition, is_uuid, parse_cents, parse_revision,
-};
+use frame_portal_domain::{BatchStatus, Competence, content_disposition, is_uuid, parse_cents};
 use frame_portal_port::{
     ApiError, Command, DOCUMENT_MAX_BYTES, Download, ListQuery, Preconditions, Upload,
 };
 use frame_portal_use_cases::{
     AuthDeps, LoginError, LoginInput, LogoutDeps, PrintDeps, SessionView, collect_files,
-    download_invoice, download_order_file, download_quote_file, get_monthly_close, get_order,
-    list_orders, login, logout, mark_printed, submit_invoice, submit_quote,
+    download_batch_file, download_invoice, download_quote_file, get_batch, get_monthly_close,
+    list_batches, login, logout, mark_printed, submit_invoice, submit_quote,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -383,7 +381,7 @@ fn preconditions(headers: &HeaderMap) -> Preconditions {
     }
 }
 
-async fn orders(
+async fn batches(
     State(state): AppStateRef,
     axum::Extension(rid): axum::Extension<RequestId>,
     headers: HeaderMap,
@@ -395,7 +393,7 @@ async fn orders(
     let Some(query) = list_query(&query) else {
         return invalid(&rid);
     };
-    match list_orders(state.print(), query).await {
+    match list_batches(state.print(), query).await {
         Ok(list) => no_store(Json(list).into_response()),
         Err(e) => upstream_error(&e, &rid),
     }
@@ -405,7 +403,7 @@ async fn orders(
 pub fn list_query(raw: &HashMap<String, String>) -> Option<ListQuery> {
     let status = match raw.get("status") {
         None => None,
-        Some(s) => Some(OrderStatus::parse(s)?),
+        Some(s) => Some(BatchStatus::parse(s)?),
     };
     let limit = match raw.get("limit") {
         None => None,
@@ -429,7 +427,7 @@ pub fn list_query(raw: &HashMap<String, String>) -> Option<ListQuery> {
     })
 }
 
-async fn order(
+async fn batch(
     State(state): AppStateRef,
     axum::Extension(rid): axum::Extension<RequestId>,
     headers: HeaderMap,
@@ -441,28 +439,28 @@ async fn order(
     if !is_uuid(&id) {
         return not_found(&rid);
     }
-    match get_order(state.print(), &id).await {
+    match get_batch(state.print(), &id).await {
         Ok(tagged) => with_etag(
-            Json(json!({"order": tagged.body})).into_response(),
+            Json(json!({"batch": tagged.body})).into_response(),
             &tagged.etag,
         ),
         Err(e) => upstream_error(&e, &rid),
     }
 }
 
-async fn order_file(
+async fn batch_file(
     State(state): AppStateRef,
     axum::Extension(rid): axum::Extension<RequestId>,
     headers: HeaderMap,
-    Path((id, file_id)): Path<(String, String)>,
+    Path((id, order_id, file_id)): Path<(String, String, String)>,
 ) -> Response {
     if let Err(response) = authed(&state, &headers, &rid) {
         return *response;
     }
-    if !is_uuid(&id) || !is_uuid(&file_id) {
+    if !is_uuid(&id) || !is_uuid(&order_id) || !is_uuid(&file_id) {
         return not_found(&rid);
     }
-    match download_order_file(state.print(), &id, &file_id).await {
+    match download_batch_file(state.print(), &id, &order_id, &file_id).await {
         Ok(download) => download_response(download),
         Err(e) => upstream_error(&e, &rid),
     }
@@ -486,20 +484,16 @@ async fn quote_file(
     }
 }
 
+/// `POST …/collected` takes exactly `{}`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CollectBody {
-    revision: u64,
-}
+struct CollectBody {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct PrintedBody {
-    revision: u64,
     quote_id: String,
 }
-
-const MAX_REVISION: u64 = 1_000_000;
 
 async fn collected(
     State(state): AppStateRef,
@@ -511,18 +505,15 @@ async fn collected(
     if let Err(response) = commanded(&state, &headers, &rid) {
         return *response;
     }
-    let Some(body) = json_body::<CollectBody>(request).await else {
-        return invalid(&rid);
-    };
-    if !(1..=MAX_REVISION).contains(&body.revision) {
+    if json_body::<CollectBody>(request).await.is_none() {
         return invalid(&rid);
     }
     if !is_uuid(&id) {
         return not_found(&rid);
     }
     let pre = preconditions(&headers);
-    match collect_files(state.print(), &id, body.revision, &pre).await {
-        Ok(command) => command_response("order", command),
+    match collect_files(state.print(), &id, &pre).await {
+        Ok(command) => command_response("batch", command),
         Err(e) => upstream_error(&e, &rid),
     }
 }
@@ -540,15 +531,15 @@ async fn printed(
     let Some(body) = json_body::<PrintedBody>(request).await else {
         return invalid(&rid);
     };
-    if !(1..=MAX_REVISION).contains(&body.revision) || !is_uuid(&body.quote_id) {
+    if !is_uuid(&body.quote_id) {
         return invalid(&rid);
     }
     if !is_uuid(&id) {
         return not_found(&rid);
     }
     let pre = preconditions(&headers);
-    match mark_printed(state.print(), &id, body.revision, &body.quote_id, &pre).await {
-        Ok(command) => command_response("order", command),
+    match mark_printed(state.print(), &id, &body.quote_id, &pre).await {
+        Ok(command) => command_response("batch", command),
         Err(e) => upstream_error(&e, &rid),
     }
 }
@@ -651,22 +642,20 @@ async fn quotes(
     if let Err(response) = commanded(&state, &headers, &rid) {
         return *response;
     }
-    let form = match read_form(&state, request, &["file", "amountCents", "orderRevision"]).await {
+    let form = match read_form(&state, request, &["file", "amountCents"]).await {
         Ok(form) => form,
         Err(FormError::TooLarge) => return too_large(&rid),
         Err(FormError::Invalid) => return invalid(&rid),
     };
-    let cents = parse_cents(&form.fields["amountCents"]);
-    let revision = parse_revision(&form.fields["orderRevision"]);
-    let (Some(cents), Some(revision)) = (cents, revision) else {
+    let Some(cents) = parse_cents(&form.fields["amountCents"]) else {
         return invalid(&rid);
     };
     if !is_uuid(&id) {
         return not_found(&rid);
     }
     let pre = preconditions(&headers);
-    match submit_quote(state.print(), &id, cents, revision, form.file, &pre).await {
-        Ok(command) => command_response("order", command),
+    match submit_quote(state.print(), &id, cents, form.file, &pre).await {
+        Ok(command) => command_response("batch", command),
         Err(e) => upstream_error(&e, &rid),
     }
 }
@@ -822,16 +811,19 @@ async fn drain_unread_body(request: Request, next: axum::middleware::Next) -> Re
 pub fn routes() -> Router<Arc<AppState>> {
     let upload = DefaultBodyLimit::max(UPLOAD_BODY_LIMIT);
     let print = Router::new()
-        .route("/orders", get(orders))
-        .route("/orders/{id}", get(order))
-        .route("/orders/{id}/files/{file_id}", get(order_file))
-        .route("/orders/{id}/collected", axum::routing::post(collected))
+        .route("/batches", get(batches))
+        .route("/batches/{id}", get(batch))
         .route(
-            "/orders/{id}/quotes",
+            "/batches/{id}/orders/{order_id}/files/{file_id}",
+            get(batch_file),
+        )
+        .route("/batches/{id}/collected", axum::routing::post(collected))
+        .route(
+            "/batches/{id}/quotes",
             axum::routing::post(quotes).layer(upload),
         )
-        .route("/orders/{id}/quotes/{quote_id}/file", get(quote_file))
-        .route("/orders/{id}/printed", axum::routing::post(printed))
+        .route("/batches/{id}/quotes/{quote_id}/file", get(quote_file))
+        .route("/batches/{id}/printed", axum::routing::post(printed))
         .route("/monthly-closes/{competence}", get(monthly_close))
         .route(
             "/monthly-closes/{competence}/invoice",
@@ -844,7 +836,7 @@ pub fn routes() -> Router<Arc<AppState>> {
             "/api/session",
             get(get_session).post(post_session).delete(delete_session),
         )
-        .nest("/api/print/v1", print)
+        .nest("/api/print/v2", print)
         .route("/api", get(unknown))
         .route("/api/{*rest}", axum::routing::any(unknown))
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))

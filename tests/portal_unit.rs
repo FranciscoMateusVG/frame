@@ -6,8 +6,6 @@ mod portal_api_conformance;
 mod portal_config;
 #[path = "unit/portal_domain.rs"]
 mod portal_domain;
-#[path = "helpers/portal_fixtures.rs"]
-mod portal_fixtures;
 #[path = "unit/portal_property.rs"]
 mod portal_property;
 #[path = "unit/portal_session.rs"]
@@ -42,9 +40,9 @@ async fn memory_fake_outage_is_unavailable_not_a_contract_error() {
     let fake = frame_portal_memory::PrintApiMemory::default();
     fake.set_unavailable(true);
     assert!(matches!(
-        fake.list_orders(&ListQuery::default()).await,
+        fake.list_batches(&ListQuery::default()).await,
         Err(ApiError::Unavailable { .. })
     ));
     fake.set_unavailable(false);
-    assert!(fake.list_orders(&ListQuery::default()).await.is_ok());
+    assert!(fake.list_batches(&ListQuery::default()).await.is_ok());
 }

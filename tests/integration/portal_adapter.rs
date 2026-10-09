@@ -43,16 +43,7 @@ fn unavailable(result: Result<impl std::fmt::Debug, ApiError>) -> &'static str {
 #[tokio::test]
 async fn credential_redirect_timeout_and_contract_breaks_are_unavailable() {
     let fake = Arc::new(PrintApiMemory::default());
-    fake.seed_order(
-        "Pedido",
-        vec![crate::portal_api_conformance::job(
-            "Folha",
-            1,
-            "A4 simples",
-            "a.pdf",
-            crate::portal_api_conformance::PDF_A,
-        )],
-    );
+    crate::portal_api_conformance::seed(&fake, &crate::portal_api_conformance::snapshot("open"));
     let upstream = FakeHono::start(fake.clone()).await;
     let timeouts = Timeouts {
         json: Duration::from_millis(300),
@@ -60,30 +51,30 @@ async fn credential_redirect_timeout_and_contract_breaks_are_unavailable() {
     };
     let adapter = PrintApiHono::new(&upstream.origin, TOKEN, timeouts.clone()).unwrap();
     let query = ListQuery::default();
-    assert!(adapter.list_orders(&query).await.is_ok());
+    assert!(adapter.list_batches(&query).await.is_ok());
 
     let wrong = PrintApiHono::new(&upstream.origin, &"x".repeat(40), timeouts.clone()).unwrap();
-    assert_eq!(unavailable(wrong.list_orders(&query).await), "credential");
+    assert_eq!(unavailable(wrong.list_batches(&query).await), "credential");
     upstream.set_mode(1);
-    assert_eq!(unavailable(adapter.list_orders(&query).await), "redirect");
+    assert_eq!(unavailable(adapter.list_batches(&query).await), "redirect");
     upstream.set_mode(2);
-    assert_eq!(unavailable(adapter.list_orders(&query).await), "contract");
+    assert_eq!(unavailable(adapter.list_batches(&query).await), "contract");
     assert_eq!(
-        unavailable(adapter.get_order(&uuid::Uuid::new_v4().to_string()).await),
+        unavailable(adapter.get_batch(&uuid::Uuid::new_v4().to_string()).await),
         "contract"
     );
     upstream.set_mode(0);
     upstream.set_delay_ms(1_000);
-    assert_eq!(unavailable(adapter.list_orders(&query).await), "timeout");
+    assert_eq!(unavailable(adapter.list_batches(&query).await), "timeout");
     upstream.set_delay_ms(0);
     fake.set_unavailable(true);
     assert_eq!(
-        unavailable(adapter.list_orders(&query).await),
+        unavailable(adapter.list_batches(&query).await),
         "upstream_error"
     );
 
     let closed = PrintApiHono::new("http://127.0.0.1:9", TOKEN, timeouts).unwrap();
-    assert_eq!(unavailable(closed.list_orders(&query).await), "transport");
+    assert_eq!(unavailable(closed.list_batches(&query).await), "transport");
 }
 
 #[test]
@@ -170,7 +161,10 @@ async fn downloads_are_bounded_and_must_match_their_declared_length() {
 
     // Exact length: streamed as is.
     let ok = raw_upstream(file_response("Content-Length: 9\r\n", b"%PDF-1.4\n")).await;
-    let d = adapter(&ok).order_file(&order, &file).await.unwrap();
+    let d = adapter(&ok)
+        .batch_file(&order, &order, &file)
+        .await
+        .unwrap();
     assert_eq!(d.length, Some(9));
     assert_eq!(collect(d).await.unwrap(), b"%PDF-1.4\n");
 
@@ -181,7 +175,7 @@ async fn downloads_are_bounded_and_must_match_their_declared_length() {
     ))
     .await;
     assert_eq!(
-        unavailable(adapter(&chunked).order_file(&order, &file).await),
+        unavailable(adapter(&chunked).batch_file(&order, &order, &file).await),
         "contract"
     );
 
@@ -201,7 +195,10 @@ async fn downloads_are_bounded_and_must_match_their_declared_length() {
 
     // Short body: the stream fails instead of ending as if complete.
     let short = raw_upstream(file_response("Content-Length: 1000\r\n", b"%PDF-1.4\n")).await;
-    let d = adapter(&short).order_file(&order, &file).await.unwrap();
+    let d = adapter(&short)
+        .batch_file(&order, &order, &file)
+        .await
+        .unwrap();
     assert!(
         collect(d).await.is_err(),
         "truncated body must not look complete"
@@ -209,6 +206,9 @@ async fn downloads_are_bounded_and_must_match_their_declared_length() {
 
     // Longer than declared: never more than the declared bytes.
     let long = raw_upstream(file_response("Content-Length: 4\r\n", b"%PDF-1.4\n")).await;
-    let d = adapter(&long).order_file(&order, &file).await.unwrap();
+    let d = adapter(&long)
+        .batch_file(&order, &order, &file)
+        .await
+        .unwrap();
     assert_eq!(collect(d).await.unwrap(), b"%PDF");
 }

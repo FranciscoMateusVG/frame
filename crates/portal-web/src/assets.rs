@@ -57,7 +57,7 @@ pub const SCRIPT: &str = r#"(() => {
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() },
         body: JSON.stringify({ password: login.password.value }),
       });
-      if (res.ok) { location.assign(login.dataset.next || '/orders'); return; }
+      if (res.ok) { location.assign(login.dataset.next || '/'); return; }
       if (res.status === 401) say(out, 'Senha incorreta.', 'error');
       else if (res.status === 429) {
         const minutes = Math.max(1, Math.ceil(Number(res.headers.get('Retry-After') || '60') / 60));
@@ -76,7 +76,7 @@ pub const SCRIPT: &str = r#"(() => {
   if (!box) return;
   const out = $('#message', box);
   const recovery = $('.recovery', box);
-  const scope = box.dataset.orderId || ('close-' + box.dataset.competence);
+  const scope = box.dataset.batchId || ('close-' + box.dataset.competence);
   // Intents of an older ETag can no longer apply: the page already reflects them.
   try {
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
@@ -97,32 +97,37 @@ pub const SCRIPT: &str = r#"(() => {
     return [k, key];
   }
 
+  const DOCUMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+  const DOCUMENT_EXTENSIONS = /\.(pdf|jpe?g|png|webp)$/i;
+
   function build(form) {
     const action = form.dataset.action;
-    const id = box.dataset.orderId;
-    const revision = Number(box.dataset.revision);
+    const batch = '/api/print/v2/batches/' + box.dataset.batchId;
     if (action === 'collect') {
-      return { url: '/api/print/v1/orders/' + id + '/collected', json: { revision }, fingerprint: 'collect' };
+      if (!form.checked.checked) return { error: 'Marque “Conferi todos os arquivos” antes de confirmar.' };
+      return { url: batch + '/collected', json: {}, fingerprint: 'collect' };
     }
-    if (action === 'printed') {
-      return { url: '/api/print/v1/orders/' + id + '/printed', json: { revision, quoteId: box.dataset.quoteId }, fingerprint: 'printed:' + box.dataset.quoteId };
+    if (action === 'mark-printed') {
+      return { url: batch + '/printed', json: { quoteId: box.dataset.quoteId }, fingerprint: 'printed:' + box.dataset.quoteId };
     }
     const file = form.file.files[0];
     if (!file) return { error: 'Escolha o arquivo.' };
+    if (!(DOCUMENT_TYPES.includes(file.type) || (!file.type && DOCUMENT_EXTENSIONS.test(file.name)))) {
+      return { error: 'Tipo de arquivo não aceito. Envie PDF, JPEG, PNG ou WebP.' };
+    }
     if (file.size > 5 * 1024 * 1024) return { error: 'Arquivo acima de 5 MB.' };
-    const amountField = action === 'quote' ? form.amount : form.declared;
+    const amountField = action === 'upload-quote' ? form.amount : form.declared;
     const cents = parseBRL(amountField.value);
     if (cents === null) return { error: 'Valor inválido. Use o formato 1.234,56.' };
     const data = new FormData();
     data.append('file', file, file.name);
     const fingerprint = [cents, file.name, file.size, file.lastModified].join(':');
-    if (action === 'quote') {
+    if (action === 'upload-quote') {
       data.append('amountCents', String(cents));
-      data.append('orderRevision', String(revision));
-      return { url: '/api/print/v1/orders/' + id + '/quotes', form: data, fingerprint };
+      return { url: batch + '/quotes', form: data, fingerprint };
     }
     data.append('declaredTotalCents', String(cents));
-    return { url: '/api/print/v1/monthly-closes/' + box.dataset.competence + '/invoice', form: data, fingerprint };
+    return { url: '/api/print/v2/monthly-closes/' + box.dataset.competence + '/invoice', form: data, fingerprint };
   }
 
   async function perform(form) {
@@ -157,7 +162,7 @@ pub const SCRIPT: &str = r#"(() => {
     const err = await problem(res);
     if (res.status === 412) {
       store.del(storageKey);
-      say(out, 'Pedido atualizado; confira novamente antes de repetir.', 'error');
+      say(out, 'O lote mudou desde que esta página foi aberta. Atualize, confira os arquivos e confirme novamente.', 'error');
       recovery.hidden = false;
       $('[data-retry]', recovery).hidden = true;
     } else if (res.status === 401) {
@@ -246,8 +251,19 @@ table.list th, table.list td { text-align: left; padding: 8px; border-bottom: 1p
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 8px 0; }
 dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; }
 dd.total { font-weight: 700; } dd.diverges { color: var(--err); font-weight: 700; }
-article.job { border-top: 1px solid var(--line); padding: 12px 0; }
-article.job:first-of-type { border-top: 0; }
+.notice.warn { border-left: 4px solid var(--err); }
+ol.progress { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 12px 0; counter-reset: step; }
+ol.progress li { flex: 1 1 120px; padding: 6px 8px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); font-size: .85rem; color: var(--muted); }
+ol.progress li.done { background: var(--ok-bg); color: var(--ok); }
+ol.progress li.current { border-color: var(--accent); color: var(--ink); font-weight: 700; }
+article.request { border-top: 1px solid var(--line); padding: 16px 0 4px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.file-card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+.file-card.residual { border-style: dashed; }
+.file-card p { margin: 4px 0; }
+.job-title { font-weight: 600; }
+.file-name { font-size: .95rem; margin: 4px 0; overflow-wrap: anywhere; }
+section.general { margin-top: 12px; }
 .instructions { white-space: pre-wrap; background: var(--bg); padding: 8px 10px; border-radius: 6px; }
 .confirm, .recovery { margin-top: 12px; padding: 12px; border: 1px dashed var(--accent); border-radius: 8px; }
 #message.error { color: var(--err); } #message.ok { color: var(--ok); }

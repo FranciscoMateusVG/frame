@@ -192,14 +192,16 @@ and adapt all three examples. Keep the workflow, boundaries and gate.
 The print-shop portal (spec `print-portal.md` §4.3/§4.5/§5/§7) is built on
 these rails, next to the Cat example. It is a BFF that renders server-side
 HTML. It has **no database and no object storage**. Its only dependency is the
-Incluir Hono `/api/print-portal/v1` service API, reached with a server-only
-bearer token. Sessions are kept in memory.
+Incluir Hono `/api/print-portal/v2` (batch) service API, reached with a
+server-only bearer token. Sessions are kept in memory. The home page is the
+single current print batch (one card per file, grouped by request); history
+is under "Lotes anteriores" and the monthly NF under "Notas fiscais".
 
 ```text
 crates/portal-domain/     frozen upstream DTOs (strict serde + schema checks), cents/BRL, competence, filenames
 crates/portal-port/       PrintApi trait (the upstream port), ApiError, Preconditions, Download
 crates/portal-use-cases/  session registry, login limiter, login/logout, one use case per print operation
-crates/portal-memory/     in-memory upstream fake: ETag/If-Match CAS, idempotency, state machine, closes
+crates/portal-memory/     in-memory upstream fake: ETag/If-Match CAS, idempotency, batch state machine, closes
 crates/portal-hono/       real reqwest adapter: fixed origin, no redirects, strict parsing, timeouts
 crates/portal-web/        axum router, maud pages, JSON BFF, cookies/CSRF; `print-portal` binary
 ```
@@ -222,7 +224,9 @@ Optional settings: `PRINT_PORTAL_SESSION_IDLE_SECONDS` (default 1800),
 
 The tests run the shared `PrintApi` conformance suite against the memory fake,
 and against the real HTTP adapter through a fake Hono on a socket. The BFF is
-exercised end to end over real sockets (`tests/portal_*.rs`). For the black-box
+exercised end to end over real sockets (`tests/portal_*.rs`), including the
+shared TTP smoke (`infra/ttp/staging.py`) for every frozen fixture checkpoint
+(python3 required). For the black-box
 run against a live Incluir, see `examples/src/bin/portal_e2e.rs`. Benchmark
 commands are listed in [BENCHMARK.md](BENCHMARK.md#print-portal-benchmark-scope).
 
