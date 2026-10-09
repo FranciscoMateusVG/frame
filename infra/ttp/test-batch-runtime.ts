@@ -100,3 +100,66 @@ test('all seven explicit legacy pairing fixtures are reproducible supplier proje
     assert.deepEqual(s.get(b.id).items, b.items);
   }
 });
+
+test('identical scenario/generation yields identical successful IDs; failed validation is atomic', () => {
+  const factory = seedFactory(freeze);
+  const run = (generation: number, failed = false) => {
+    const s = factory('flow', { generation }).state;
+    s.collect(id, pre(s));
+    const p = pre(s);
+    const before = s.get(id);
+    if (failed) {
+      assert.throws(
+        () => s.uploadQuote(id, { ...upload, name: '' }, 45900, p),
+        /FROZEN_SCHEMA_INVALID/,
+      );
+      assert.deepEqual(s.get(id), before);
+    }
+    const q = s.uploadQuote(id, upload, 45900, p);
+    assert.deepEqual(s.uploadQuote(id, upload, 45900, p), { ...q, replayed: true });
+    s.checkpoint('approve-quote');
+    const quote = q.body.batch.currentQuote;
+    assert.ok(quote);
+    s.print(id, quote.id, pre(s));
+    const invoice = s.uploadInvoice('2026-09', upload, 46900, {
+      key: randomUUID(),
+      etag: s.monthEtag('2026-09'),
+    });
+    return {
+      quote: quote.id,
+      document: quote.document.id,
+      invoice: invoice.body.close.document?.id,
+    };
+  };
+  assert.deepEqual(run(7), run(7));
+  assert.deepEqual(run(7, true), run(7));
+  assert.notDeepEqual(run(7), run(8));
+});
+
+test('real next fixture mismatch rolls back receipt instead of overwriting expected items', () => {
+  const s = seedFactory(freeze)('flow').state;
+  s.collect(id, pre(s));
+  s.publish({ ...structuredClone(freeze.fixture.queuedItem), title: 'Deliberate mismatch' });
+  const q = s.uploadQuote(id, upload, 45900, pre(s)).body.batch.currentQuote;
+  assert.ok(q);
+  s.checkpoint('approve-quote');
+  s.print(id, q.id, pre(s));
+  const before = s.get(id);
+  assert.throws(() => s.receive(id), /INVALID_SEED/);
+  assert.deepEqual(s.get(id), before);
+  assert.equal(s.memberStatus(before.items[0].orderId), 'in_progress');
+  assert.equal(s.open(), null);
+});
+
+test('schema failure does not commit quote state or idempotency', () => {
+  const s = seedFactory(freeze)('flow').state;
+  s.collect(id, pre(s));
+  const p = pre(s),
+    before = s.get(id);
+  assert.throws(
+    () => s.uploadQuote(id, { ...upload, name: '' }, 45900, p),
+    /FROZEN_SCHEMA_INVALID/,
+  );
+  assert.deepEqual(s.get(id), before);
+  assert.equal(s.uploadQuote(id, upload, 45900, p).replayed, false);
+});

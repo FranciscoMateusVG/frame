@@ -52,7 +52,8 @@ and ETag, even after later state changes. A committed-quote503 fault is one-shot
 retry **the same key and intention**, never a fresh key. JS synchronous transactions
 serialize mutations; async body buffering is inside the active trial command
 lease, so reset/finish/checkpoints cannot race an upload. At most two command
-bodies are in flight; capacity is503 with Retry-After, not an unbounded queue.
+bodies are in flight; the third concurrent command gets503 with Retry-After, not
+an unbounded queue. This is a documented fake capacity limit, not a Hono claim.
 
 Limits: read120/min, command30/min, upload10/hour, Retry-After on429. Upload file
 5MiB, body5MiB+512KiB capped while reading, exact multipart fields, MIME/magic checks,
@@ -112,9 +113,12 @@ mechanism in memory, never a pasted token in a shell command or report.
 ## Three reproducible acceptance scenarios
 
 Use identical scenario/checkpoint order for all arms, recorded in each manifest.
-Seed digest includes bundle digest + scenario + fixed clock + policy `ttp-v2-1`.
-Generated quote/invoice IDs are ephemeral, not baseline fields to compare across
-languages; the frozen initial DTOs and all file bytes are identical.
+Seed digest includes bundle digest + scenario + fixed clock + generation + policy `ttp-v2-2`.
+Quote, document and invoice IDs derive from SHA256(scenario, generation,
+successful per-trial sequence). Same scenario+generation+successful command order
+reproduces IDs; failures/replays do not consume sequence numbers. Different
+generations intentionally have different IDs; record the generation when comparing.
+Frozen initial DTOs and all file bytes remain identical.
 
 1. `flow`: open LOT-0001, one member with two jobs plus residual instructions/file.
    Read/download → admin `revise-open` → old collect412 → refresh/reconfirm collect
@@ -126,7 +130,8 @@ languages; the frozen initial DTOs and all file bytes are identical.
    record that variation, do not mix it into the standard flow silently.
 2. `cancel`: initial approved LOT-0001 with IMP-0002 already queued. Admin `cancel`
    → immutable cancelled history + next open LOT-0003 with both pending members;
-   IMP-0001 visibly carries `previouslyCancelledIn=LOT-0001`. No old quote/price;
+   IMP-0001 visibly carries `previouslyCancelledIn=LOT-0001`. The next projection must exactly match the real rebatched fixture; incompatible
+   ad-hoc state rolls back with INVALID_SEED instead of rewriting fixture items. No old quote/price;
    collection, upload and approval are required again.
 3. `empty-history`: received LOT-0001 history, no current/open batch. Empty current
    screen; history's source files remain downloadable. September mixed total46900,

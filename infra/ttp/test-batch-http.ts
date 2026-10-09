@@ -9,6 +9,20 @@ import { loadFreeze } from './contract-freeze.js';
 import fixture from './contracts/print-portal-v2.fixture.json';
 import { TrialControl } from './trial-control.js';
 
+const responseSchema = loadFreeze();
+function responseDef(response: Response, path: string) {
+  if (response.status >= 400) return 'BatchError';
+  const route = path.split('?')[0] ?? '';
+  if (route === '/batches') return 'BatchListResponse';
+  if (route === '/batches/open') return 'OpenBatchResponse';
+  return route.startsWith('/monthly-closes/') ? 'BatchCloseResponse' : 'BatchResponse';
+}
+async function validated(response: Response, path: string) {
+  if ((response.headers.get('content-type') ?? '').includes('application/json'))
+    responseSchema.validate(responseDef(response, path), await response.clone().json());
+  return response;
+}
+
 test('JSON routes use real HTTP auth, session epoch, visibility, ETag and replay', async () => {
   const batch = structuredClone(fixture.batches[0]) as Batch;
   const control = new TrialControl(seedFactory(loadFreeze()));
@@ -30,9 +44,9 @@ test('JSON routes use real HTTP auth, session epoch, visibility, ETag and replay
     fetch(origin + path, {
       ...init,
       headers: { Authorization: `Bearer ${token}`, ...init.headers },
-    });
+    }).then((r) => validated(r, path));
   try {
-    assert.equal((await fetch(`${origin}/batches`)).status, 401);
+    assert.equal((await validated(await fetch(`${origin}/batches`), '/batches')).status, 401);
     const get = await req('/batches/open');
     assert.equal(get.status, 200);
     const etag = get.headers.get('etag');
@@ -96,7 +110,10 @@ test('real HTTP multipart + downloads + committed-503 replay + monthly invoice',
   assert.ok(address && typeof address === 'object');
   const root = `http://127.0.0.1:${address.port}/api/print-portal/v2`;
   const req = (path: string, init: RequestInit = {}) =>
-    fetch(root + path, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } });
+    fetch(root + path, {
+      ...init,
+      headers: { Authorization: `Bearer ${token}`, ...init.headers },
+    }).then((r) => validated(r, path));
   const pdf = freeze.assets.get('00000000-0000-4000-8000-0000000000c8');
   assert.ok(pdf);
   const key = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;

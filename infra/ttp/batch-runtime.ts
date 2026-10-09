@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import {
   BatchError,
   BatchState,
@@ -46,6 +45,7 @@ export class RateError extends BatchError {
 }
 
 export class BatchRuntime extends BatchState {
+  private sequence = 0;
   private uploads = new Map<string, Buffer>();
   private uploadBytes = 0;
   private invoices = new Map<string, Close>();
@@ -55,6 +55,7 @@ export class BatchRuntime extends BatchState {
   constructor(
     readonly freeze: ContractFreeze,
     readonly scenario: string,
+    readonly generation = 1,
   ) {
     const f = freeze.fixture;
     const initial =
@@ -69,13 +70,10 @@ export class BatchRuntime extends BatchState {
       batches[0].items = [pairingSeedItem(freeze, scenario.slice(8))];
     super({
       batches,
-      nextBatch: (items) => ({
-        ...structuredClone(
+      nextBatch: (items) =>
+        structuredClone(
           items.some((i) => i.previouslyCancelledIn) ? f.rebatchedBatch.batch : f.nextBatch.batch,
         ),
-        items,
-        itemCount: items.length,
-      }),
       now: moment,
     });
     if (scenario === 'cancel') this.publish(f.queuedItem);
@@ -108,9 +106,13 @@ export class BatchRuntime extends BatchState {
     if (!q || q.id !== quoteId) return fail(404, 'NOT_FOUND');
     return this.download(q.document);
   }
-  private document(u: Upload): FileDto {
+  private nextId(offset = 1) {
+    const h = sha256(JSON.stringify([this.scenario, this.generation, this.sequence + offset]));
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+  }
+  private document(u: Upload, offset = 1): FileDto {
     return {
-      id: randomUUID(),
+      id: this.nextId(offset),
       name: u.name,
       mime: u.mime,
       bytes: u.bytes.length,
@@ -131,11 +133,11 @@ export class BatchRuntime extends BatchState {
     const r = this.submitQuote(
       id,
       {
-        id: randomUUID(),
+        id: this.nextId(),
         revision: (b.currentQuote?.revision ?? 0) + 1,
         amountCents,
         currency: 'BRL',
-        document: this.document(u),
+        document: this.document(u, 2),
         decision: 'pending',
         rejectionReason: null,
         submittedAt: moment,
@@ -143,11 +145,14 @@ export class BatchRuntime extends BatchState {
       },
       pre,
       () => this.capacity(u),
+      (batch) => this.freeze.validate('BatchResponse', { batch }),
     );
     const quote = r.body.batch.currentQuote;
     if (!quote) return fail(500, 'INTERNAL');
-    if (!r.replayed) this.store(quote.document, u);
-    this.freeze.validate('BatchResponse', r.body);
+    if (!r.replayed) {
+      this.store(quote.document, u);
+      this.sequence += 2;
+    }
     return r;
   }
   consumeQuoteFault(replayed: boolean) {
@@ -232,6 +237,7 @@ export class BatchRuntime extends BatchState {
         c.rejectionReason = null;
         this.freeze.validate('BatchCloseResponse', { close: c });
         this.store(c.document, u);
+        this.sequence += 1;
         this.invoices.set(competence, structuredClone(c));
         return {
           status: 201,
@@ -285,7 +291,7 @@ export class BatchRuntime extends BatchState {
   }
 }
 export function seedFactory(freeze: ContractFreeze): SeedFactory<BatchRuntime> {
-  return (scenario) => {
+  return (scenario, context = { generation: 1 }) => {
     if (
       ![
         'flow',
@@ -296,13 +302,14 @@ export function seedFactory(freeze: ContractFreeze): SeedFactory<BatchRuntime> {
     )
       throw new ControlError(400, 'UNKNOWN_SCENARIO');
     return {
-      state: new BatchRuntime(freeze, scenario),
+      state: new BatchRuntime(freeze, scenario, context.generation),
       seed_sha256: sha256(
         JSON.stringify({
           bundle: freeze.bundleHash,
           scenario,
           clock: clockMonth,
-          policy: 'ttp-v2-1',
+          generation: context.generation,
+          policy: 'ttp-v2-2',
         }),
       ),
     };

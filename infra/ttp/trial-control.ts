@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 type Phase = 'idle' | 'prepared' | 'active' | 'finished' | 'aborted';
 type Stamp = { boot_id: string; generation: number; trial_id: string };
 type Seed<S> = { state: S; seed_sha256: string };
-export type SeedFactory<S> = (scenario: string) => Seed<S>;
+export type SeedFactory<S> = (scenario: string, context?: { generation: number }) => Seed<S>;
 
 export class ControlError extends Error {
   constructor(
@@ -64,7 +64,7 @@ export class TrialControl<S> {
     const seed = this.seed;
     if (!seed) refuse(503, 'FREEZE_NOT_CONFIGURED');
     // Seed construction must finish before replacing the previous generation.
-    const next = seed(input.scenario);
+    const next = seed(input.scenario, { generation: this.generation + 1 });
     if (!/^[a-f0-9]{64}$/.test(next.seed_sha256)) refuse(500, 'INVALID_SEED_DIGEST');
     this.state = next.state;
     this.generation += 1;

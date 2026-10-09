@@ -172,6 +172,7 @@ export class BatchState {
     pre: Preconditions,
     status: number,
     operation: (b: Batch) => void,
+    validate: (b: Batch) => void = () => {},
   ): BatchReply {
     this.lookup(id); // Ownership/existence before idempotency lookup; HTTP authenticates first.
     return this.replay(`${id}/${action}`, fields, pre, this.etag(id), () =>
@@ -179,6 +180,7 @@ export class BatchState {
         const b = this.lookup(id);
         operation(b);
         b.version += 1;
+        validate(b);
         return {
           status,
           body: { batch: structuredClone(b) },
@@ -199,31 +201,45 @@ export class BatchState {
       b.collectedAt = this.now;
     });
   }
-  submitQuote(id: string, quote: Quote, pre: Preconditions, beforeCommit = () => {}) {
+  submitQuote(
+    id: string,
+    quote: Quote,
+    pre: Preconditions,
+    beforeCommit = () => {},
+    validate: (b: Batch) => void = () => {},
+  ) {
     const intention = [
       quote.amountCents,
       quote.document.sha256,
       quote.document.name,
       quote.document.mime,
     ];
-    return this.command(id, 'quotes', intention, pre, 201, (b) => {
-      if (!['files_collected', 'quote_rejected'].includes(b.status)) reject(409, 'INVALID_STATE');
-      if (
-        !Number.isInteger(quote.amountCents) ||
-        quote.amountCents < 1 ||
-        quote.amountCents > 2147483647
-      )
-        reject(400, 'INVALID_REQUEST');
-      beforeCommit();
-      b.currentQuote = {
-        ...structuredClone(quote),
-        decision: 'pending',
-        rejectionReason: null,
-        decidedAt: null,
-      };
-      b.status = 'quote_pending';
-      b.approvedAmountCents = null;
-    });
+    return this.command(
+      id,
+      'quotes',
+      intention,
+      pre,
+      201,
+      (b) => {
+        if (!['files_collected', 'quote_rejected'].includes(b.status)) reject(409, 'INVALID_STATE');
+        if (
+          !Number.isInteger(quote.amountCents) ||
+          quote.amountCents < 1 ||
+          quote.amountCents > 2147483647
+        )
+          reject(400, 'INVALID_REQUEST');
+        beforeCommit();
+        b.currentQuote = {
+          ...structuredClone(quote),
+          decision: 'pending',
+          rejectionReason: null,
+          decidedAt: null,
+        };
+        b.status = 'quote_pending';
+        b.approvedAmountCents = null;
+      },
+      validate,
+    );
   }
   print(id: string, quoteId: string, pre: Preconditions) {
     return this.command(id, 'printed', { quoteId }, pre, 200, (b) => {
